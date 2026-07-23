@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+.venv/
+build/
+dist/
+Act_Ready/*
+!Act_Ready/.gitkeep
