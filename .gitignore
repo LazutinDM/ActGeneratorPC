@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.venv/
+.build-env/
+.idea/
+build/
+dist/
+work/
+*.log
+Acts/*
+!Acts/.gitkeep
+Data/Other/History/*
+!Data/Other/History/.gitkeep
+Act_Ready/*
+!Act_Ready/.gitkeep
