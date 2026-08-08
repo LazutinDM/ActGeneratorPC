@@ -44,6 +44,5 @@ jobs:
         run: |
           gh release create "${{ github.ref_name }}" `
             "dist/ActGeneratorPC-portable.zip#ActGeneratorPC portable for Windows" `
-            "dist/ActGeneratorPC-portable.zip.sha256#SHA-256 checksum" `
             --verify-tag `
             --generate-notes
