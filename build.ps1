@@ -1,5 +1,6 @@
 param(
-    [switch]$SkipInstall
+    [switch]$SkipInstall,
+    [switch]$IncludeSha256
 )
 
 $ErrorActionPreference = "Stop"
@@ -14,18 +15,25 @@ if (-not $SkipInstall) {
 python -m PyInstaller --clean --noconfirm ActGeneratorPC.spec
 
 $PortableDir = Join-Path $ProjectDir "dist\ActGeneratorPC"
-Copy-Item -LiteralPath "update_config.json" -Destination $PortableDir -Force
+$BuiltExe = Join-Path $PortableDir "ActGeneratorPC.exe"
+$PortableDataDir = Join-Path $PortableDir "Data"
+$PortableConfigDir = Join-Path $PortableDataDir "Other\Configuration"
 
-foreach ($Folder in @("Data", "Templates")) {
-    if (Test-Path -LiteralPath $Folder) {
-        Copy-Item -LiteralPath $Folder -Destination $PortableDir -Recurse -Force
-    }
-    else {
-        New-Item -ItemType Directory -Path (Join-Path $PortableDir $Folder) -Force | Out-Null
+if (-not (Test-Path -LiteralPath $BuiltExe -PathType Leaf)) {
+    throw "PyInstaller did not create $BuiltExe"
+}
+New-Item -ItemType Directory -Path $PortableDataDir -Force | Out-Null
+
+if (Test-Path -LiteralPath "Data") {
+    Get-ChildItem -LiteralPath "Data" -Force | ForEach-Object {
+        Copy-Item -LiteralPath $_.FullName -Destination $PortableDataDir -Recurse -Force
     }
 }
 
-New-Item -ItemType Directory -Path (Join-Path $PortableDir "Act_Ready") -Force | Out-Null
+New-Item -ItemType Directory -Path $PortableConfigDir -Force | Out-Null
+Copy-Item -LiteralPath "update_config.json" -Destination $PortableConfigDir -Force
+
+New-Item -ItemType Directory -Path (Join-Path $PortableDir "Acts") -Force | Out-Null
 
 $Archive = Join-Path $ProjectDir "dist\ActGeneratorPC-portable.zip"
 if (Test-Path -LiteralPath $Archive) {
@@ -33,11 +41,18 @@ if (Test-Path -LiteralPath $Archive) {
 }
 Compress-Archive -Path (Join-Path $PortableDir "*") -DestinationPath $Archive -CompressionLevel Optimal
 
-$Hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Archive).Hash.ToLowerInvariant()
 $ChecksumPath = $Archive + ".sha256"
-Set-Content -LiteralPath $ChecksumPath -Value "$Hash  ActGeneratorPC-portable.zip" -Encoding ascii
+if ($IncludeSha256) {
+    $Hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Archive).Hash.ToLowerInvariant()
+    Set-Content -LiteralPath $ChecksumPath -Value "$Hash  ActGeneratorPC-portable.zip" -Encoding ascii
+}
+elseif (Test-Path -LiteralPath $ChecksumPath) {
+    Remove-Item -LiteralPath $ChecksumPath -Force
+}
 
 Write-Host ""
 Write-Host "Portable build:"
 Write-Host "  $Archive"
-Write-Host "  $ChecksumPath"
+if ($IncludeSha256) {
+    Write-Host "  $ChecksumPath"
+}

@@ -2,7 +2,7 @@
 from pathlib import Path
 
 project_dir = Path(SPEC).resolve().parent
-icon_path = project_dir / "Data" / "icons" / "app.ico"
+icon_path = project_dir / "Data" / "Icons" / "app.ico"
 
 a = Analysis(
     ["app.py"],
@@ -30,6 +30,9 @@ exe = EXE(
     strip=False,
     upx=True,
     console=False,
+    # Keep the PyInstaller runtime beside application data in one Data folder.
+    # PyInstaller supports exactly one contents-directory level in onedir mode.
+    contents_directory="Data",
     icon=str(icon_path) if icon_path.exists() else None,
 )
 
@@ -39,6 +42,5 @@ coll = COLLECT(
     a.datas,
     strip=False,
     upx=True,
-    upx_exclude=[],
     name="ActGeneratorPC",
 )

@@ -1,3 +1,9 @@
+"""ActGeneratorPC user interface and document-generation workflow.
+
+Folder paths live in app_paths.py; update/rollback code lives in
+update_manager.py.  Keep this file focused on UI actions and DOCX generation.
+"""
+
 import os
 import re
 import sys
@@ -5,12 +11,18 @@ import json
 import datetime
 import subprocess
 import ctypes
+import shutil
+import tempfile
 from typing import List, Dict
 from functools import partial
-from PySide6.QtCore import QTimer
 
-from update_manager import UpdateManager
-from PySide6.QtCore import Qt, QUrl, QSignalBlocker, QStringListModel, QEvent, QTimer
+from update_manager import UpdateManager, confirm_healthy_startup
+from PySide6.QtCore import (
+    Qt, QUrl, QSignalBlocker, QStringListModel, QEvent, QTimer,
+    QByteArray, QBuffer, QIODevice,
+)
+from PySide6.QtPdf import QPdfDocument
+from PySide6.QtPdfWidgets import QPdfView
 from PySide6.QtGui import (
     QAction, QPalette, QColor, QDesktopServices, QPixmap, QPainter, QPen, QIcon,
     QPainterPath, QRegion, QFont
@@ -24,6 +36,26 @@ from PySide6.QtWidgets import (
 )
 
 from docx import Document
+from docx_preview import PreviewRenderError, render_docx_to_pdf
+from excel_export import (
+    ExcelExportError,
+    append_act_to_workbook,
+    area_for_station,
+    load_excel_path,
+    note_for_materials,
+    save_excel_path,
+)
+
+from app_paths import (
+    APP_DIR, CONFIG_DIR, DATA_DIR, DOCUMENTATION_DIR, EXCEL_EXPORT_CONFIG, FILES, ICONS_DIR,
+    ICONS_GEN_DIR, ICON_APP, ICON_ARROW_DOWN, ICON_CALENDAR, ICON_DOCX,
+    ICON_DONE_WORK, ICON_EQUIPMENT, ICON_EXCEL, ICON_ISSUES, ICON_LISTS,
+    ICON_MATERIALS, ICON_QTY, ICON_SERIAL, ICON_SERVICES, ICON_STATION,
+    ICON_USER, ICON_XLS, LEGACY_OUTPUT_DIR, OTHER_DIR, OUTPUT_DIR,
+    SPIN_DOWN_DARK_PNG, SPIN_DOWN_LIGHT_PNG, SPIN_UP_DARK_PNG,
+    SPIN_UP_LIGHT_PNG, TEMPLATE_TYPE1, TEMPLATE_TYPE2, TEMPLATES_DIR,
+    VARIABLES_DIR,
+)
 
 
 INVALID_FILENAME_RE = re.compile(r'[\\/:*?"<>|]+')
@@ -32,81 +64,129 @@ SEARCH_CLEAN_RE = re.compile(r"[^0-9a-zа-я]+")
 
 
 # -----------------------------
-# Resource path (works with PyInstaller)
-# -----------------------------
-def resource_path(relative_path: str) -> str:
-    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
-    return os.path.join(base, relative_path)
-
-
-# -----------------------------
-# Paths / constants
-# -----------------------------
-# Portable root: next to app.py in development and next to the executable
-# in a PyInstaller build. All data remains inside the portable folder.
-APP_DIR = (
-    os.path.dirname(os.path.abspath(sys.executable))
-    if getattr(sys, "frozen", False)
-    else os.path.dirname(os.path.abspath(__file__))
-)
-DATA_DIR = os.path.join(APP_DIR, "Data")
-TEMPLATES_DIR = os.path.join(APP_DIR, "Templates")
-OUTPUT_DIR = os.path.join(APP_DIR, "Act_Ready")  # ✅ renamed output folder
-
-# -----------------------------
-# Icons (Data\icons)
-# -----------------------------
-ICONS_DIR = os.path.join(DATA_DIR, "icons")
-
-ICON_APP = os.path.join(ICONS_DIR, "app.ico")
-ICON_ARROW_DOWN = os.path.join(ICONS_DIR, "arrow_down.png")
-ICON_CALENDAR = os.path.join(ICONS_DIR, "calendar.png")
-ICON_DONE_WORK = os.path.join(ICONS_DIR, "done_work.png")
-ICON_EXCEL = os.path.join(ICONS_DIR, "excel.png")
-ICON_ISSUES = os.path.join(ICONS_DIR, "issues.png")
-ICON_MATERIALS = os.path.join(ICONS_DIR, "materials.png")
-ICON_QTY = os.path.join(ICONS_DIR, "qty.png")
-ICON_SERIAL = os.path.join(ICONS_DIR, "serial.png")
-ICON_SERVICES = os.path.join(ICONS_DIR, "services.png")
-ICON_STATION = os.path.join(ICONS_DIR, "station.png")
-ICON_USER = os.path.join(ICONS_DIR, "user.png")
-ICON_XLS = os.path.join(ICONS_DIR, "xls.png")
-ICON_EQUIPMENT = os.path.join(ICONS_DIR, "equipment.png")
-ICON_LISTS = os.path.join(ICONS_DIR, "lists.png")
-ICON_DOCX = os.path.join(ICONS_DIR, "docx.png")
-
-# SpinBox arrows (generated)
-ICONS_GEN_DIR = os.path.join(DATA_DIR, "_icons")
-SPIN_UP_LIGHT_PNG = os.path.join(ICONS_GEN_DIR, "spin_up_light.png")
-SPIN_DOWN_LIGHT_PNG = os.path.join(ICONS_GEN_DIR, "spin_down_light.png")
-SPIN_UP_DARK_PNG = os.path.join(ICONS_GEN_DIR, "spin_up_dark.png")
-SPIN_DOWN_DARK_PNG = os.path.join(ICONS_GEN_DIR, "spin_down_dark.png")
-
-FILES = {
-    "executors": os.path.join(DATA_DIR, "executor_list.txt"),
-    "locations": os.path.join(DATA_DIR, "location_list.txt"),
-    "models": os.path.join(DATA_DIR, "model_list.txt"),
-    "work": os.path.join(DATA_DIR, "work_list.txt"),
-    "issues": os.path.join(DATA_DIR, "issues_list.txt"),
-    "done_work": os.path.join(DATA_DIR, "done_work_list.txt"),
-    "materials": os.path.join(DATA_DIR, "materials_list.txt"),
-    # links stored in tables.json
-    "links": os.path.join(DATA_DIR, "tables.json"),
-}
-
-TEMPLATE_TYPE1 = os.path.join(TEMPLATES_DIR, "ABP_MKTF.docx")
-TEMPLATE_TYPE2 = os.path.join(TEMPLATES_DIR, "Validator_MID.docx")
-
-
-# -----------------------------
 # Helpers
 # -----------------------------
 def ensure_dirs():
     os.makedirs(DATA_DIR, exist_ok=True)
     os.makedirs(TEMPLATES_DIR, exist_ok=True)
+    os.makedirs(VARIABLES_DIR, exist_ok=True)
+    os.makedirs(OTHER_DIR, exist_ok=True)
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    os.makedirs(DOCUMENTATION_DIR, exist_ok=True)
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     os.makedirs(ICONS_GEN_DIR, exist_ok=True)
     os.makedirs(ICONS_DIR, exist_ok=True)
+    migrate_legacy_portable_layout()
+
+
+def migrate_legacy_portable_layout():
+    """Move user documents and remove obsolete root items after an update."""
+    # Older versions stored variable lists directly in Data.
+    for name in os.listdir(DATA_DIR):
+        source = os.path.join(DATA_DIR, name)
+        if not os.path.isfile(source) or not name.lower().endswith(".txt"):
+            continue
+        destination = os.path.join(VARIABLES_DIR, name)
+        try:
+            if os.path.exists(destination):
+                os.remove(source)
+            else:
+                os.replace(source, destination)
+        except OSError:
+            if not os.path.exists(destination):
+                shutil.copy2(source, destination)
+                os.remove(source)
+
+    legacy_tables = os.path.join(DATA_DIR, "tables.json")
+    current_tables = os.path.join(CONFIG_DIR, "tables.json")
+    if os.path.isfile(legacy_tables):
+        try:
+            if os.path.exists(current_tables):
+                os.remove(legacy_tables)
+            else:
+                os.replace(legacy_tables, current_tables)
+        except OSError:
+            if not os.path.exists(current_tables):
+                shutil.copy2(legacy_tables, current_tables)
+                os.remove(legacy_tables)
+
+    legacy_generated_icons = os.path.join(DATA_DIR, "_icons")
+    if os.path.isdir(legacy_generated_icons):
+        for name in os.listdir(legacy_generated_icons):
+            source = os.path.join(legacy_generated_icons, name)
+            destination = os.path.join(ICONS_GEN_DIR, name)
+            if os.path.isfile(source) and not os.path.exists(destination):
+                try:
+                    os.replace(source, destination)
+                except OSError:
+                    shutil.copy2(source, destination)
+                    os.remove(source)
+        try:
+            os.rmdir(legacy_generated_icons)
+        except OSError:
+            pass
+
+    legacy_output_dirs = (
+        LEGACY_OUTPUT_DIR,
+        os.path.join(APP_DIR, "\u0410\u043a\u0442\u044b"),
+    )
+    for legacy_output_dir in legacy_output_dirs:
+        if not os.path.isdir(legacy_output_dir):
+            continue
+        for name in os.listdir(legacy_output_dir):
+            source = os.path.join(legacy_output_dir, name)
+            destination = os.path.join(OUTPUT_DIR, name)
+            if not os.path.exists(destination):
+                try:
+                    os.replace(source, destination)
+                except OSError:
+                    if os.path.isdir(source):
+                        shutil.copytree(source, destination)
+                        shutil.rmtree(source)
+                    else:
+                        shutil.copy2(source, destination)
+                        os.remove(source)
+        try:
+            os.rmdir(legacy_output_dir)
+        except OSError:
+            pass
+
+    if not getattr(sys, "frozen", False):
+        return
+
+    # Normalize the spelling of portable user-data folders. PyInstaller runtime
+    # files also live in Data, so unknown entries must never be deleted here.
+    expected_data_folders = {
+        name.casefold(): name
+        for name in ("Icons", "Other", "Templates", "Variables")
+    }
+    # Windows paths are case-insensitive, but Explorer keeps the spelling used
+    # by an old release. Rename through a temporary name to normalize it.
+    for actual_name in os.listdir(DATA_DIR):
+        canonical_name = expected_data_folders.get(actual_name.casefold())
+        if not canonical_name or actual_name == canonical_name:
+            continue
+        actual_path = os.path.join(DATA_DIR, actual_name)
+        temporary_path = os.path.join(DATA_DIR, f".{canonical_name}.rename")
+        canonical_path = os.path.join(DATA_DIR, canonical_name)
+        try:
+            os.replace(actual_path, temporary_path)
+            os.replace(temporary_path, canonical_path)
+        except OSError:
+            pass
+
+    for legacy_folder in ("_internal", "Templates", "icons", "_icons", "variables"):
+        legacy_path = os.path.join(APP_DIR, legacy_folder)
+        if os.path.isdir(legacy_path):
+            shutil.rmtree(legacy_path, ignore_errors=True)
+
+    legacy_config = os.path.join(APP_DIR, "update_config.json")
+    new_config = os.path.join(CONFIG_DIR, "update_config.json")
+    if os.path.isfile(legacy_config) and os.path.isfile(new_config):
+        try:
+            os.remove(legacy_config)
+        except OSError:
+            pass
 
 
 def _make_placeholder_icon_png(path: str, label: str, bg: QColor):
@@ -785,6 +865,82 @@ class SearchCombo(QComboBox):
         return (self.currentText() or "").strip()
 
 
+class ActPreviewDialog(QDialog):
+    """Show the populated document as real rendered pages before saving."""
+
+    def __init__(self, temporary_path: str, parent=None):
+        super().__init__(parent)
+        self.temporary_path = temporary_path
+        self.pdf_path = render_docx_to_pdf(temporary_path)
+        self.setWindowTitle("Предпросмотр акта")
+        self.resize(980, 780)
+
+        layout = QVBoxLayout(self)
+        info = QLabel(
+            "Проверьте полностью заполненный акт. Можно открыть временный DOCX, "
+            "вернуться к редактированию или подтвердить окончательное сохранение."
+        )
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        with open(self.pdf_path, "rb") as pdf_file:
+            self.pdf_bytes = QByteArray(pdf_file.read())
+        self.pdf_buffer = QBuffer(self)
+        self.pdf_buffer.setData(self.pdf_bytes)
+        if not self.pdf_buffer.open(QIODevice.ReadOnly):
+            raise PreviewRenderError("Не удалось открыть PDF предпросмотра в памяти.")
+
+        self.pdf_document = QPdfDocument(self)
+        load_error = self.pdf_document.load(self.pdf_buffer)
+        if load_error is not None and load_error != QPdfDocument.Error.None_:
+            raise PreviewRenderError(f"Qt не смог открыть PDF предпросмотра: {load_error}")
+
+        self.preview = QPdfView(self)
+        self.preview.setDocument(self.pdf_document)
+        self.preview.setPageMode(QPdfView.PageMode.MultiPage)
+        self.preview.setZoomMode(QPdfView.ZoomMode.FitToWidth)
+        layout.addWidget(self.preview, 1)
+
+        controls = QHBoxLayout()
+        open_button = QPushButton("Открыть документ")
+        open_button.clicked.connect(lambda: open_file(self.temporary_path))
+        controls.addWidget(open_button)
+
+        fit_button = QPushButton("По ширине")
+        fit_button.clicked.connect(
+            lambda: self.preview.setZoomMode(QPdfView.ZoomMode.FitToWidth)
+        )
+        zoom_out_button = QPushButton("−")
+        zoom_out_button.setFixedWidth(42)
+        zoom_out_button.clicked.connect(lambda: self._zoom(0.85))
+        zoom_in_button = QPushButton("+")
+        zoom_in_button.setFixedWidth(42)
+        zoom_in_button.clicked.connect(lambda: self._zoom(1.15))
+        controls.addWidget(fit_button)
+        controls.addWidget(zoom_out_button)
+        controls.addWidget(zoom_in_button)
+        controls.addStretch(1)
+
+        back_button = QPushButton("Вернуться к редактированию")
+        back_button.clicked.connect(self.reject)
+        save_button = QPushButton("Подтвердить и сохранить")
+        save_button.setDefault(True)
+        save_button.clicked.connect(self.accept)
+        controls.addWidget(back_button)
+        controls.addWidget(save_button)
+        layout.addLayout(controls)
+
+    def _zoom(self, factor: float):
+        self.preview.setZoomMode(QPdfView.ZoomMode.Custom)
+        self.preview.setZoomFactor(max(0.25, min(4.0, self.preview.zoomFactor() * factor)))
+
+    def done(self, result: int):
+        self.preview.setDocument(None)
+        self.pdf_document.close()
+        self.pdf_buffer.close()
+        super().done(result)
+
+
 # -----------------------------
 # Main window
 # -----------------------------
@@ -917,6 +1073,52 @@ class MainWindow(QMainWindow):
         """
 
     # ---------------- UI ----------------
+    def check_for_updates(self):
+        manager = getattr(self, "update_manager", None)
+        if manager is None:
+            QMessageBox.warning(
+                self,
+                "Проверка обновлений",
+                "Модуль обновления ещё не запущен. Повторите попытку через несколько секунд.",
+            )
+            return
+        manager.check_async(manual=True)
+
+    def choose_excel_workbook(self) -> str:
+        current = load_excel_path(EXCEL_EXPORT_CONFIG)
+        start_at = current if current and os.path.exists(current) else APP_DIR
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Выберите Excel-таблицу для автозаполнения",
+            start_at,
+            "Excel (*.xlsx)",
+        )
+        if not path:
+            return ""
+        try:
+            save_excel_path(EXCEL_EXPORT_CONFIG, path)
+        except OSError as exc:
+            QMessageBox.critical(
+                self,
+                "Настройка Excel",
+                f"Не удалось сохранить путь к таблице:\n{exc}",
+            )
+            return ""
+        self.lbl_status.setText(f"Excel-таблица автозаполнения: {path}")
+        return path
+
+    def open_excel_workbook(self):
+        path = load_excel_path(EXCEL_EXPORT_CONFIG)
+        if path and os.path.isfile(path):
+            open_file(path)
+            return
+        QMessageBox.information(
+            self,
+            "Excel-таблица",
+            "Таблица ещё не выбрана. Укажите существующий файл .xlsx.",
+        )
+        self.choose_excel_workbook()
+
     def _build_topbar(self) -> QWidget:
         bar = QFrame()
         bar.setObjectName("TopBar")
@@ -926,6 +1128,19 @@ class MainWindow(QMainWindow):
 
         # --- File menu
         self.menu_file = QMenu(self)
+        self.act_check_updates = QAction("Проверить обновления", self)
+        self.act_check_updates.triggered.connect(self.check_for_updates)
+        self.menu_file.addAction(self.act_check_updates)
+        self.menu_file.addSeparator()
+
+        self.act_select_excel = QAction("Выбрать Excel-таблицу…", self)
+        self.act_select_excel.triggered.connect(self.choose_excel_workbook)
+        self.menu_file.addAction(self.act_select_excel)
+        self.act_open_excel = QAction("Открыть Excel-таблицу", self)
+        self.act_open_excel.triggered.connect(self.open_excel_workbook)
+        self.menu_file.addAction(self.act_open_excel)
+        self.menu_file.addSeparator()
+
         act_exit = QAction("Выход", self)
         act_exit.triggered.connect(self.close)
         self.menu_file.addAction(act_exit)
@@ -1369,7 +1584,7 @@ class MainWindow(QMainWindow):
 
         tpl = self.selected_template(model)
         if not os.path.exists(tpl):
-            QMessageBox.critical(self, "Нет шаблона", f"Не найден шаблон:\n{tpl}\n\nПоложи его в папку Templates.")
+            QMessageBox.critical(self, "Нет шаблона", f"Не найден шаблон:\n{tpl}\n\nПоложи его в папку Data\\Templates.")
             return
 
         mapping = {
@@ -1393,14 +1608,70 @@ class MainWindow(QMainWindow):
             ts = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
             base = safe_filename(f"Акт_{location or 'БезСтанции'}_{serial or 'БезККТ'}_{ts}")
             out_path = os.path.join(OUTPUT_DIR, base + ".docx")
-            doc.save(out_path)
 
-            self.lbl_status.setText(f"✅ Файл создан: {out_path}")
+            with tempfile.TemporaryDirectory(
+                prefix="actgenerator-preview-", ignore_cleanup_errors=True
+            ) as preview_dir:
+                preview_path = os.path.join(preview_dir, base + ".docx")
+                doc.save(preview_path)
+                preview = ActPreviewDialog(preview_path, self)
+                if preview.exec() != QDialog.Accepted:
+                    self.lbl_status.setText(
+                        "Сохранение отменено. Можно изменить данные и снова открыть предпросмотр."
+                    )
+                    return
+                os.makedirs(OUTPUT_DIR, exist_ok=True)
+                shutil.copy2(preview_path, out_path)
+
+            excel_status = "Excel: таблица не выбрана."
+            workbook_path = load_excel_path(EXCEL_EXPORT_CONFIG)
+            if not workbook_path:
+                answer = QMessageBox.question(
+                    self,
+                    "Автозаполнение Excel",
+                    "Выбрать Excel-таблицу для автоматической записи этого и следующих актов?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.Yes,
+                )
+                if answer == QMessageBox.Yes:
+                    workbook_path = self.choose_excel_workbook()
+
+            if workbook_path:
+                try:
+                    excel_result = append_act_to_workbook(
+                        workbook_path,
+                        {
+                            "date": date,
+                            "executor": executor,
+                            "model": model,
+                            "serial": serial,
+                            "location": location,
+                            "work": work,
+                            "issues": issues,
+                            "materials": materials,
+                            "done_work": done_work,
+                            "qty": qty_int if qty_int > 0 else "",
+                            "area": area_for_station(location),
+                            "notes": note_for_materials(materials),
+                        },
+                    )
+                    excel_status = (
+                        f"Excel: лист «{excel_result.sheet_name}», строка {excel_result.row_number}."
+                    )
+                except ExcelExportError as exc:
+                    excel_status = f"Excel не обновлён: {exc}"
+                    QMessageBox.warning(
+                        self,
+                        "Акт сохранён, Excel не обновлён",
+                        f"DOCX создан:\n{out_path}\n\n{exc}",
+                    )
+
+            self.lbl_status.setText(f"✅ Файл создан: {out_path}\n{excel_status}")
 
             msg = QMessageBox(self)
             msg.setWindowTitle("Готово")
             msg.setText("Акт создан.")
-            msg.setInformativeText(out_path)
+            msg.setInformativeText(f"{out_path}\n\n{excel_status}")
             btn_open = msg.addButton("Открыть", QMessageBox.AcceptRole)
             msg.addButton("OK", QMessageBox.RejectRole)
             msg.exec()
@@ -1419,6 +1690,7 @@ def main():
     app.setStyle("Fusion")
     window = MainWindow()
     window.show()
+    QTimer.singleShot(2500, confirm_healthy_startup)
 
     # Keep the updater alive for the lifetime of the main window.
     window.update_manager = UpdateManager(window)

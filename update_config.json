@@ -1,5 +1,6 @@
 {
-  "repository": "LazutinDM/ActGenerator",
+  "repository": "LazutinDM/ActGeneratorPC",
   "asset_name": "ActGeneratorPC-portable.zip",
-  "check_on_start": true
+  "check_on_start": true,
+  "require_sha256": false
 }
