@@ -1,7 +1,4 @@
-param(
-    [switch]$SkipInstall,
-    [switch]$IncludeSha256
-)
+param([switch]$SkipInstall)
 
 $ErrorActionPreference = "Stop"
 $ProjectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -41,18 +38,6 @@ if (Test-Path -LiteralPath $Archive) {
 }
 Compress-Archive -Path (Join-Path $PortableDir "*") -DestinationPath $Archive -CompressionLevel Optimal
 
-$ChecksumPath = $Archive + ".sha256"
-if ($IncludeSha256) {
-    $Hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Archive).Hash.ToLowerInvariant()
-    Set-Content -LiteralPath $ChecksumPath -Value "$Hash  ActGeneratorPC-portable.zip" -Encoding ascii
-}
-elseif (Test-Path -LiteralPath $ChecksumPath) {
-    Remove-Item -LiteralPath $ChecksumPath -Force
-}
-
 Write-Host ""
 Write-Host "Portable build:"
 Write-Host "  $Archive"
-if ($IncludeSha256) {
-    Write-Host "  $ChecksumPath"
-}

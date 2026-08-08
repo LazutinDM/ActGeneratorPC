@@ -95,9 +95,64 @@ def save_excel_path(config_path: str, workbook_path: str) -> None:
     path = Path(config_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
+    configured_path = str(workbook_path).strip()
+    if configured_path:
+        configured_path = str(Path(configured_path).resolve())
     with open(temporary, "w", encoding="utf-8") as handle:
-        json.dump({"workbook_path": str(Path(workbook_path).resolve())}, handle, ensure_ascii=False, indent=2)
+        json.dump({"workbook_path": configured_path}, handle, ensure_ascii=False, indent=2)
     os.replace(temporary, path)
+
+
+def ensure_embedded_excel_workbook(template_path: str, workbook_path: str) -> str:
+    """Create the user's editable workbook from the bundled template once."""
+    template = Path(template_path).resolve()
+    workbook = Path(workbook_path).resolve()
+    if workbook.is_file():
+        return str(workbook)
+    if template.suffix.casefold() != ".xlsx" or not template.is_file():
+        raise ExcelExportError(f"Встроенный шаблон Excel не найден: {template}")
+
+    workbook.parent.mkdir(parents=True, exist_ok=True)
+    temporary_handle = tempfile.NamedTemporaryFile(
+        prefix=f".{workbook.stem}-initial-",
+        suffix=".xlsx",
+        dir=workbook.parent,
+        delete=False,
+    )
+    temporary_path = Path(temporary_handle.name)
+    temporary_handle.close()
+    try:
+        shutil.copy2(template, temporary_path)
+        with zipfile.ZipFile(temporary_path, "r") as archive:
+            broken = archive.testzip()
+            if broken:
+                raise ExcelExportError(
+                    f"Встроенный шаблон Excel повреждён: {broken}"
+                )
+            archive.getinfo("xl/workbook.xml")
+        # os.replace keeps creation atomic. Existing user data is never copied
+        # over because the method returns above when the workbook already exists.
+        if not workbook.exists():
+            os.replace(temporary_path, workbook)
+    except (OSError, zipfile.BadZipFile, KeyError) as exc:
+        raise ExcelExportError(
+            f"Не удалось создать встроенную Excel-таблицу: {exc}"
+        ) from exc
+    finally:
+        temporary_path.unlink(missing_ok=True)
+    return str(workbook)
+
+
+def resolve_excel_workbook(
+    config_path: str,
+    template_path: str,
+    embedded_workbook_path: str,
+) -> str:
+    """Return an external override or the persistent built-in workbook."""
+    configured = load_excel_path(config_path)
+    if configured and Path(configured).is_file():
+        return str(Path(configured).resolve())
+    return ensure_embedded_excel_workbook(template_path, embedded_workbook_path)
 
 
 def _normalize_header(value: str) -> str:

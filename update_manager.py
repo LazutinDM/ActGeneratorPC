@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import hashlib
 import os
 import re
 import shutil
@@ -221,24 +220,6 @@ def safe_extract(archive: Path, destination: Path) -> None:
         bundle.extractall(destination)
 
 
-def file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
-def expected_sha256(checksum_file: Path, asset_name: str) -> str:
-    text = checksum_file.read_text(encoding="ascii", errors="strict")
-    match = re.search(r"\b([0-9a-fA-F]{64})\b", text)
-    if not match:
-        raise ValueError(f"{checksum_file.name} does not contain a SHA-256 digest.")
-    if asset_name not in text:
-        raise ValueError("The checksum file refers to another update archive.")
-    return match.group(1).lower()
-
-
 def payload_root(stage: Path) -> Path:
     children = [item for item in stage.iterdir() if item.name != "__MACOSX"]
     if len(children) == 1 and children[0].is_dir():
@@ -354,15 +335,6 @@ class UpdateManager(QObject):
                         f"В Release {tag} отсутствует файл {asset_name}."
                     )
                 return
-            checksum_name = asset_name + ".sha256"
-            checksum_asset = assets.get(checksum_name)
-            if config.get("require_sha256", True) and not checksum_asset:
-                if manual:
-                    self.manual_check_failed.emit(
-                        f"Release {tag} не содержит обязательный файл {checksum_name}."
-                    )
-                return
-
             self.release_ready.emit(
                 {
                     "tag": tag,
@@ -370,11 +342,6 @@ class UpdateManager(QObject):
                     "notes": str(release.get("body") or "").strip(),
                     "asset_name": asset_name,
                     "asset_url": str(asset.get("browser_download_url", "")),
-                    "checksum_name": checksum_name,
-                    "checksum_url": str(
-                        (checksum_asset or {}).get("browser_download_url", "")
-                    ),
-                    "require_sha256": bool(config.get("require_sha256", True)),
                 }
             )
         except Exception as error:
@@ -465,19 +432,6 @@ class UpdateManager(QObject):
             download_file(release["asset_url"], archive)
             if not archive.is_file() or archive.stat().st_size < 1024:
                 raise ValueError("Downloaded update archive is missing or too small.")
-
-            checksum_url = release.get("checksum_url", "")
-            if checksum_url:
-                checksum = work_dir / release["checksum_name"]
-                download_file(checksum_url, checksum)
-                expected = expected_sha256(checksum, release["asset_name"])
-                actual = file_sha256(archive)
-                if actual != expected:
-                    raise ValueError(
-                        "SHA-256 verification failed. The update was not installed."
-                    )
-            elif release.get("require_sha256", True):
-                raise ValueError("A signed release checksum is required.")
 
             stage = work_dir / "payload"
             stage.mkdir()
@@ -609,7 +563,8 @@ try {
         "Acts",
         "Act_Ready",
         "Data\Variables",
-        "Data\Other\Configuration"
+        "Data\Other\Configuration",
+        "Data\Other\Excel"
     )
     foreach ($Relative in $Preserve) {
         $Current = Join-Path $Destination $Relative

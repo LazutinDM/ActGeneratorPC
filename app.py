@@ -19,7 +19,7 @@ from functools import partial
 from update_manager import UpdateManager, confirm_healthy_startup
 from PySide6.QtCore import (
     Qt, QUrl, QSignalBlocker, QStringListModel, QEvent, QTimer,
-    QByteArray, QBuffer, QIODevice,
+    QByteArray, QBuffer, QIODevice, QThread,
 )
 from PySide6.QtPdf import QPdfDocument
 from PySide6.QtPdfWidgets import QPdfView
@@ -41,13 +41,17 @@ from excel_export import (
     ExcelExportError,
     append_act_to_workbook,
     area_for_station,
+    ensure_embedded_excel_workbook,
     load_excel_path,
     note_for_materials,
+    resolve_excel_workbook,
     save_excel_path,
 )
 
 from app_paths import (
-    APP_DIR, CONFIG_DIR, DATA_DIR, DOCUMENTATION_DIR, EXCEL_EXPORT_CONFIG, FILES, ICONS_DIR,
+    APP_DIR, APP_SETTINGS_CONFIG, CONFIG_DIR, DATA_DIR, DOCUMENTATION_DIR,
+    EMBEDDED_EXCEL_WORKBOOK, EXCEL_EXPORT_CONFIG, EXCEL_TEMPLATE,
+    EXCEL_WORK_DIR, FILES, ICONS_DIR,
     ICONS_GEN_DIR, ICON_APP, ICON_ARROW_DOWN, ICON_CALENDAR, ICON_DOCX,
     ICON_DONE_WORK, ICON_EQUIPMENT, ICON_EXCEL, ICON_ISSUES, ICON_LISTS,
     ICON_MATERIALS, ICON_QTY, ICON_SERIAL, ICON_SERVICES, ICON_STATION,
@@ -73,6 +77,7 @@ def ensure_dirs():
     os.makedirs(OTHER_DIR, exist_ok=True)
     os.makedirs(CONFIG_DIR, exist_ok=True)
     os.makedirs(DOCUMENTATION_DIR, exist_ok=True)
+    os.makedirs(EXCEL_WORK_DIR, exist_ok=True)
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     os.makedirs(ICONS_GEN_DIR, exist_ok=True)
     os.makedirs(ICONS_DIR, exist_ok=True)
@@ -444,6 +449,26 @@ def save_links(links: List[Dict[str, str]]):
     ]
     with open(FILES["links"], "w", encoding="utf-8") as f:
         json.dump(clean, f, ensure_ascii=False, indent=2)
+
+
+def load_app_settings() -> Dict[str, bool]:
+    settings = {"preview_before_save": True}
+    try:
+        with open(APP_SETTINGS_CONFIG, "r", encoding="utf-8") as stream:
+            saved = json.load(stream)
+        if isinstance(saved, dict) and isinstance(saved.get("preview_before_save"), bool):
+            settings["preview_before_save"] = saved["preview_before_save"]
+    except (OSError, json.JSONDecodeError):
+        pass
+    return settings
+
+
+def save_app_settings(settings: Dict[str, bool]):
+    os.makedirs(os.path.dirname(APP_SETTINGS_CONFIG), exist_ok=True)
+    temporary_path = APP_SETTINGS_CONFIG + ".tmp"
+    with open(temporary_path, "w", encoding="utf-8") as stream:
+        json.dump(settings, stream, ensure_ascii=False, indent=2)
+    os.replace(temporary_path, APP_SETTINGS_CONFIG)
 
 
 # -----------------------------
@@ -865,13 +890,34 @@ class SearchCombo(QComboBox):
         return (self.currentText() or "").strip()
 
 
+class PreviewRenderThread(QThread):
+    """Render a DOCX without blocking construction of the preview dialog."""
+
+    def __init__(self, temporary_path: str, parent=None):
+        super().__init__(parent)
+        self.temporary_path = temporary_path
+        self.pdf_path = None
+        self.error = None
+
+    def run(self):
+        try:
+            self.pdf_path = render_docx_to_pdf(self.temporary_path)
+        except Exception as error:
+            self.error = error
+
+
 class ActPreviewDialog(QDialog):
     """Show the populated document as real rendered pages before saving."""
 
     def __init__(self, temporary_path: str, parent=None):
         super().__init__(parent)
         self.temporary_path = temporary_path
-        self.pdf_path = render_docx_to_pdf(temporary_path)
+        self.pdf_path = None
+        self.pdf_bytes = None
+        self.pdf_buffer = None
+        self.pdf_document = None
+        self._loading_step = 0
+        self._cancel_requested = False
         self.setWindowTitle("Предпросмотр акта")
         self.resize(980, 780)
 
@@ -883,6 +929,90 @@ class ActPreviewDialog(QDialog):
         info.setWordWrap(True)
         layout.addWidget(info)
 
+        self.loading_label = QLabel("Подготавливаем визуальный предпросмотр…")
+        self.loading_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.loading_label, 1)
+        self.preview = QPdfView(self)
+        self.preview.setPageMode(QPdfView.PageMode.MultiPage)
+        self.preview.setZoomMode(QPdfView.ZoomMode.FitToWidth)
+        self.preview.hide()
+        layout.addWidget(self.preview, 1)
+
+        controls = QHBoxLayout()
+        self.open_button = QPushButton("Открыть документ")
+        self.open_button.setToolTip("Станет доступно после подготовки предпросмотра")
+        self.open_button.clicked.connect(lambda: open_file(self.temporary_path))
+        controls.addWidget(self.open_button)
+
+        self.fit_button = QPushButton("По ширине")
+        self.fit_button.clicked.connect(
+            lambda: self.preview.setZoomMode(QPdfView.ZoomMode.FitToWidth)
+        )
+        self.zoom_out_button = QPushButton("−")
+        self.zoom_out_button.setFixedWidth(42)
+        self.zoom_out_button.clicked.connect(lambda: self._zoom(0.85))
+        self.zoom_in_button = QPushButton("+")
+        self.zoom_in_button.setFixedWidth(42)
+        self.zoom_in_button.clicked.connect(lambda: self._zoom(1.15))
+        controls.addWidget(self.fit_button)
+        controls.addWidget(self.zoom_out_button)
+        controls.addWidget(self.zoom_in_button)
+        controls.addStretch(1)
+
+        self.back_button = QPushButton("Вернуться к редактированию")
+        self.back_button.clicked.connect(self.reject)
+        self.save_button = QPushButton("Подтвердить и сохранить")
+        self.save_button.setDefault(True)
+        self.save_button.clicked.connect(self.accept)
+        controls.addWidget(self.back_button)
+        controls.addWidget(self.save_button)
+        layout.addLayout(controls)
+
+        for button in (
+            self.open_button,
+            self.fit_button,
+            self.zoom_out_button,
+            self.zoom_in_button,
+            self.save_button,
+        ):
+            button.setEnabled(False)
+
+        self.loading_timer = QTimer(self)
+        self.loading_timer.setInterval(350)
+        self.loading_timer.timeout.connect(self._animate_loading)
+        self.loading_timer.start()
+
+        self.render_thread = PreviewRenderThread(temporary_path, self)
+        self.render_thread.finished.connect(self._render_finished)
+        self.render_thread.start()
+
+    def _animate_loading(self):
+        self._loading_step = (self._loading_step + 1) % 4
+        self.loading_label.setText(
+            "Подготавливаем визуальный предпросмотр" + "." * self._loading_step
+        )
+
+    def _render_finished(self):
+        self.loading_timer.stop()
+        if self._cancel_requested:
+            super().done(QDialog.Rejected)
+            return
+        if self.render_thread.error is not None:
+            QMessageBox.critical(
+                self,
+                "Ошибка предпросмотра",
+                str(self.render_thread.error),
+            )
+            super().done(QDialog.Rejected)
+            return
+        try:
+            self._load_pdf(self.render_thread.pdf_path)
+        except (OSError, PreviewRenderError) as error:
+            QMessageBox.critical(self, "Ошибка предпросмотра", str(error))
+            super().done(QDialog.Rejected)
+
+    def _load_pdf(self, pdf_path: str):
+        self.pdf_path = pdf_path
         with open(self.pdf_path, "rb") as pdf_file:
             self.pdf_bytes = QByteArray(pdf_file.read())
         self.pdf_buffer = QBuffer(self)
@@ -895,49 +1025,35 @@ class ActPreviewDialog(QDialog):
         if load_error is not None and load_error != QPdfDocument.Error.None_:
             raise PreviewRenderError(f"Qt не смог открыть PDF предпросмотра: {load_error}")
 
-        self.preview = QPdfView(self)
         self.preview.setDocument(self.pdf_document)
-        self.preview.setPageMode(QPdfView.PageMode.MultiPage)
-        self.preview.setZoomMode(QPdfView.ZoomMode.FitToWidth)
-        layout.addWidget(self.preview, 1)
-
-        controls = QHBoxLayout()
-        open_button = QPushButton("Открыть документ")
-        open_button.clicked.connect(lambda: open_file(self.temporary_path))
-        controls.addWidget(open_button)
-
-        fit_button = QPushButton("По ширине")
-        fit_button.clicked.connect(
-            lambda: self.preview.setZoomMode(QPdfView.ZoomMode.FitToWidth)
-        )
-        zoom_out_button = QPushButton("−")
-        zoom_out_button.setFixedWidth(42)
-        zoom_out_button.clicked.connect(lambda: self._zoom(0.85))
-        zoom_in_button = QPushButton("+")
-        zoom_in_button.setFixedWidth(42)
-        zoom_in_button.clicked.connect(lambda: self._zoom(1.15))
-        controls.addWidget(fit_button)
-        controls.addWidget(zoom_out_button)
-        controls.addWidget(zoom_in_button)
-        controls.addStretch(1)
-
-        back_button = QPushButton("Вернуться к редактированию")
-        back_button.clicked.connect(self.reject)
-        save_button = QPushButton("Подтвердить и сохранить")
-        save_button.setDefault(True)
-        save_button.clicked.connect(self.accept)
-        controls.addWidget(back_button)
-        controls.addWidget(save_button)
-        layout.addLayout(controls)
+        self.loading_label.hide()
+        self.preview.show()
+        self.open_button.setToolTip("")
+        for button in (
+            self.open_button,
+            self.fit_button,
+            self.zoom_out_button,
+            self.zoom_in_button,
+            self.save_button,
+        ):
+            button.setEnabled(True)
 
     def _zoom(self, factor: float):
         self.preview.setZoomMode(QPdfView.ZoomMode.Custom)
         self.preview.setZoomFactor(max(0.25, min(4.0, self.preview.zoomFactor() * factor)))
 
     def done(self, result: int):
-        self.preview.setDocument(None)
-        self.pdf_document.close()
-        self.pdf_buffer.close()
+        if self.render_thread.isRunning():
+            self._cancel_requested = True
+            self.loading_label.setText("Завершаем подготовку предпросмотра…")
+            self.save_button.setEnabled(False)
+            self.back_button.setEnabled(False)
+            return
+        if self.pdf_document is not None:
+            self.preview.setDocument(None)
+            self.pdf_document.close()
+        if self.pdf_buffer is not None:
+            self.pdf_buffer.close()
         super().done(result)
 
 
@@ -956,6 +1072,7 @@ class MainWindow(QMainWindow):
 
         self.dark_theme = True
         self.links = load_links()
+        self.app_settings = load_app_settings()
 
         self.data_lists = {
             key: read_lines(path)
@@ -1107,17 +1224,45 @@ class MainWindow(QMainWindow):
         self.lbl_status.setText(f"Excel-таблица автозаполнения: {path}")
         return path
 
-    def open_excel_workbook(self):
-        path = load_excel_path(EXCEL_EXPORT_CONFIG)
-        if path and os.path.isfile(path):
-            open_file(path)
-            return
-        QMessageBox.information(
-            self,
-            "Excel-таблица",
-            "Таблица ещё не выбрана. Укажите существующий файл .xlsx.",
+    def use_embedded_excel_workbook(self) -> str:
+        try:
+            path = ensure_embedded_excel_workbook(
+                EXCEL_TEMPLATE, EMBEDDED_EXCEL_WORKBOOK
+            )
+            save_excel_path(EXCEL_EXPORT_CONFIG, "")
+        except (ExcelExportError, OSError) as exc:
+            QMessageBox.critical(
+                self,
+                "Встроенная Excel-таблица",
+                f"Не удалось включить встроенную таблицу:\n{exc}",
+            )
+            return ""
+        self.lbl_status.setText(f"Используется встроенная Excel-таблица: {path}")
+        return path
+
+    def active_excel_workbook(self) -> str:
+        return resolve_excel_workbook(
+            EXCEL_EXPORT_CONFIG, EXCEL_TEMPLATE, EMBEDDED_EXCEL_WORKBOOK
         )
-        self.choose_excel_workbook()
+
+    def open_excel_workbook(self):
+        try:
+            path = self.active_excel_workbook()
+        except ExcelExportError as exc:
+            QMessageBox.critical(self, "Excel-таблица", str(exc))
+            return
+        open_file(path)
+
+    def set_preview_enabled(self, enabled: bool):
+        self.app_settings["preview_before_save"] = bool(enabled)
+        try:
+            save_app_settings(self.app_settings)
+        except OSError as error:
+            QMessageBox.warning(
+                self,
+                "Настройки",
+                f"Не удалось сохранить настройку предпросмотра:\n{error}",
+            )
 
     def _build_topbar(self) -> QWidget:
         bar = QFrame()
@@ -1133,9 +1278,25 @@ class MainWindow(QMainWindow):
         self.menu_file.addAction(self.act_check_updates)
         self.menu_file.addSeparator()
 
-        self.act_select_excel = QAction("Выбрать Excel-таблицу…", self)
+        self.act_preview_enabled = QAction("Предпросмотр перед сохранением", self)
+        self.act_preview_enabled.setCheckable(True)
+        self.act_preview_enabled.setChecked(
+            self.app_settings.get("preview_before_save", True)
+        )
+        self.act_preview_enabled.toggled.connect(self.set_preview_enabled)
+        self.menu_file.addAction(self.act_preview_enabled)
+        self.menu_file.addSeparator()
+
+        self.act_select_excel = QAction("Выбрать другую Excel-таблицу…", self)
         self.act_select_excel.triggered.connect(self.choose_excel_workbook)
         self.menu_file.addAction(self.act_select_excel)
+        self.act_use_embedded_excel = QAction(
+            "Использовать встроенную Excel-таблицу", self
+        )
+        self.act_use_embedded_excel.triggered.connect(
+            self.use_embedded_excel_workbook
+        )
+        self.menu_file.addAction(self.act_use_embedded_excel)
         self.act_open_excel = QAction("Открыть Excel-таблицу", self)
         self.act_open_excel.triggered.connect(self.open_excel_workbook)
         self.menu_file.addAction(self.act_open_excel)
@@ -1609,37 +1770,28 @@ class MainWindow(QMainWindow):
             base = safe_filename(f"Акт_{location or 'БезСтанции'}_{serial or 'БезККТ'}_{ts}")
             out_path = os.path.join(OUTPUT_DIR, base + ".docx")
 
-            with tempfile.TemporaryDirectory(
-                prefix="actgenerator-preview-", ignore_cleanup_errors=True
-            ) as preview_dir:
-                preview_path = os.path.join(preview_dir, base + ".docx")
-                doc.save(preview_path)
-                preview = ActPreviewDialog(preview_path, self)
-                if preview.exec() != QDialog.Accepted:
-                    self.lbl_status.setText(
-                        "Сохранение отменено. Можно изменить данные и снова открыть предпросмотр."
-                    )
-                    return
-                os.makedirs(OUTPUT_DIR, exist_ok=True)
-                shutil.copy2(preview_path, out_path)
+            os.makedirs(OUTPUT_DIR, exist_ok=True)
+            if self.app_settings.get("preview_before_save", True):
+                with tempfile.TemporaryDirectory(
+                    prefix="actgenerator-preview-", ignore_cleanup_errors=True
+                ) as preview_dir:
+                    preview_path = os.path.join(preview_dir, base + ".docx")
+                    doc.save(preview_path)
+                    preview = ActPreviewDialog(preview_path, self)
+                    if preview.exec() != QDialog.Accepted:
+                        self.lbl_status.setText(
+                            "Сохранение отменено. Можно изменить данные и снова открыть предпросмотр."
+                        )
+                        return
+                    shutil.copy2(preview_path, out_path)
+            else:
+                doc.save(out_path)
 
-            excel_status = "Excel: таблица не выбрана."
-            workbook_path = load_excel_path(EXCEL_EXPORT_CONFIG)
-            if not workbook_path:
-                answer = QMessageBox.question(
-                    self,
-                    "Автозаполнение Excel",
-                    "Выбрать Excel-таблицу для автоматической записи этого и следующих актов?",
-                    QMessageBox.Yes | QMessageBox.No,
-                    QMessageBox.Yes,
-                )
-                if answer == QMessageBox.Yes:
-                    workbook_path = self.choose_excel_workbook()
-
-            if workbook_path:
-                try:
-                    excel_result = append_act_to_workbook(
-                        workbook_path,
+            excel_status = "Excel: таблица не обновлена."
+            try:
+                workbook_path = self.active_excel_workbook()
+                excel_result = append_act_to_workbook(
+                    workbook_path,
                         {
                             "date": date,
                             "executor": executor,
@@ -1654,17 +1806,17 @@ class MainWindow(QMainWindow):
                             "area": area_for_station(location),
                             "notes": note_for_materials(materials),
                         },
-                    )
-                    excel_status = (
-                        f"Excel: лист «{excel_result.sheet_name}», строка {excel_result.row_number}."
-                    )
-                except ExcelExportError as exc:
-                    excel_status = f"Excel не обновлён: {exc}"
-                    QMessageBox.warning(
-                        self,
-                        "Акт сохранён, Excel не обновлён",
-                        f"DOCX создан:\n{out_path}\n\n{exc}",
-                    )
+                )
+                excel_status = (
+                    f"Excel: лист «{excel_result.sheet_name}», строка {excel_result.row_number}."
+                )
+            except ExcelExportError as exc:
+                excel_status = f"Excel не обновлён: {exc}"
+                QMessageBox.warning(
+                    self,
+                    "Акт сохранён, Excel не обновлён",
+                    f"DOCX создан:\n{out_path}\n\n{exc}",
+                )
 
             self.lbl_status.setText(f"✅ Файл создан: {out_path}\n{excel_status}")
 

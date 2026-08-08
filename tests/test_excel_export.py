@@ -8,8 +8,10 @@ from excel_export import (
     MAIN_NS,
     append_act_to_workbook,
     area_for_station,
+    ensure_embedded_excel_workbook,
     load_excel_path,
     note_for_materials,
+    resolve_excel_workbook,
     save_excel_path,
 )
 
@@ -130,6 +132,41 @@ class ExcelExportTests(unittest.TestCase):
             workbook = Path(directory) / "Tables.xlsx"
             save_excel_path(str(config), str(workbook))
             self.assertEqual(str(workbook.resolve()), load_excel_path(str(config)))
+
+    def test_embedded_workbook_is_created_once_and_not_overwritten(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            template = root / "template.xlsx"
+            workbook = root / "Data" / "Other" / "Excel" / "Tables.xlsx"
+            make_workbook(template)
+
+            created = ensure_embedded_excel_workbook(str(template), str(workbook))
+            self.assertEqual(str(workbook.resolve()), created)
+            workbook.write_bytes(b"user data")
+            ensure_embedded_excel_workbook(str(template), str(workbook))
+            self.assertEqual(b"user data", workbook.read_bytes())
+
+    def test_resolver_prefers_external_override_and_can_reset_to_embedded(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "excel_export.json"
+            template = root / "template.xlsx"
+            embedded = root / "embedded" / "Tables.xlsx"
+            external = root / "external.xlsx"
+            make_workbook(template)
+            make_workbook(external)
+
+            save_excel_path(str(config), str(external))
+            self.assertEqual(
+                str(external.resolve()),
+                resolve_excel_workbook(str(config), str(template), str(embedded)),
+            )
+            save_excel_path(str(config), "")
+            self.assertEqual(
+                str(embedded.resolve()),
+                resolve_excel_workbook(str(config), str(template), str(embedded)),
+            )
+            self.assertTrue(embedded.is_file())
 
 
 if __name__ == "__main__":

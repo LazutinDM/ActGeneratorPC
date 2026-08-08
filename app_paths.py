@@ -32,9 +32,13 @@ OTHER_DIR = os.path.join(DATA_DIR, "Other")
 CONFIG_DIR = os.path.join(OTHER_DIR, "Configuration")
 ICONS_GEN_DIR = os.path.join(OTHER_DIR, "GeneratedIcons")
 DOCUMENTATION_DIR = os.path.join(OTHER_DIR, "Documentation")
+EXCEL_WORK_DIR = os.path.join(OTHER_DIR, "Excel")
 OUTPUT_DIR = os.path.join(APP_DIR, "Acts")
 LEGACY_OUTPUT_DIR = os.path.join(APP_DIR, "Act_Ready")
 EXCEL_EXPORT_CONFIG = os.path.join(CONFIG_DIR, "excel_export.json")
+EXCEL_TEMPLATE = os.path.join(TEMPLATES_DIR, "Tables.xlsx")
+EMBEDDED_EXCEL_WORKBOOK = os.path.join(EXCEL_WORK_DIR, "Tables.xlsx")
+APP_SETTINGS_CONFIG = os.path.join(CONFIG_DIR, "app_settings.json")
 
 # User interface icons.  Missing optional icons are handled by app.py.
 ICON_APP = os.path.join(ICONS_DIR, "app.ico")

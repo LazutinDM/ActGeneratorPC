@@ -11,5 +11,6 @@ Acts/*
 !Acts/.gitkeep
 Data/Other/History/*
 !Data/Other/History/.gitkeep
+Data/Other/Excel/*
 Act_Ready/*
 !Act_Ready/.gitkeep

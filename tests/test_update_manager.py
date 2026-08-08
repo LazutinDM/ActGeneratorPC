@@ -1,23 +1,12 @@
-import hashlib
 import tempfile
 import unittest
 import zipfile
 from pathlib import Path
 
-from update_manager import expected_sha256, safe_extract
+from update_manager import safe_extract
 
 
 class UpdateValidationTests(unittest.TestCase):
-    def test_checksum_parser_and_hash(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            archive = root / "ActGeneratorPC-portable.zip"
-            archive.write_bytes(b"verified payload")
-            digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-            checksum = root / (archive.name + ".sha256")
-            checksum.write_text(f"{digest}  {archive.name}\n", encoding="ascii")
-            self.assertEqual(digest, expected_sha256(checksum, archive.name))
-
     def test_safe_extract_rejects_path_traversal(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
