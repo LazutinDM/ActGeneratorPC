@@ -30,8 +30,51 @@ class UiSmokeTests(unittest.TestCase):
             self.assertIsNotNone(window.cb_model)
             self.assertIsNotNone(window.act_select_excel)
             self.assertIsNotNone(window.act_open_excel)
+            self.assertTrue(window.act_preview_enabled.isCheckable())
         finally:
             window.close()
+
+    def test_preview_menu_setting_is_loaded_and_persisted(self):
+        with (
+            patch("app.load_app_settings", return_value={"preview_before_save": False}),
+            patch("app.save_app_settings") as save_settings,
+        ):
+            window = MainWindow()
+            try:
+                self.assertFalse(window.act_preview_enabled.isChecked())
+                window.act_preview_enabled.setChecked(True)
+                save_settings.assert_called_once_with({"preview_before_save": True})
+            finally:
+                window.close()
+
+    def test_disabled_preview_saves_without_opening_dialog(self):
+        class UnexpectedPreview:
+            def __init__(self, *_args, **_kwargs):
+                raise AssertionError("Preview dialog must not be created")
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "Acts"
+            window = MainWindow()
+            try:
+                window.app_settings["preview_before_save"] = False
+                window.cb_location.setEditText("Химки")
+                window.cb_model.setEditText("МКТФ")
+                window.cb_template.setCurrentIndex(1)
+
+                excel_result = SimpleNamespace(sheet_name="Август 26", row_number=2)
+                with (
+                    patch("app.OUTPUT_DIR", str(output)),
+                    patch("app.ActPreviewDialog", UnexpectedPreview),
+                    patch("app.load_excel_path", return_value="Tables.xlsx"),
+                    patch("app.append_act_to_workbook", return_value=excel_result),
+                    patch.object(QMessageBox, "exec", return_value=0),
+                    patch.object(QMessageBox, "clickedButton", return_value=None),
+                ):
+                    window.create_act()
+
+                self.assertEqual(1, len(list(output.glob("*.docx"))))
+            finally:
+                window.close()
 
     def test_visual_preview_loads_a_real_pdf_page(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -58,11 +101,13 @@ class UiSmokeTests(unittest.TestCase):
                 try:
                     self.assertTrue(dialog.render_thread.isRunning())
                     self.assertIsNone(dialog.pdf_document)
+                    self.assertFalse(dialog.open_button.isEnabled())
                     release_renderer.set()
                     self.assertTrue(dialog.render_thread.wait(3000))
                     self.application.processEvents()
                     self.assertEqual(1, dialog.pdf_document.pageCount())
                     self.assertIs(dialog.pdf_document, dialog.preview.document())
+                    self.assertTrue(dialog.open_button.isEnabled())
                     self.assertTrue(dialog.save_button.isEnabled())
                 finally:
                     dialog.reject()

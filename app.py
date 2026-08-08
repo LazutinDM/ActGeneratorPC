@@ -47,7 +47,8 @@ from excel_export import (
 )
 
 from app_paths import (
-    APP_DIR, CONFIG_DIR, DATA_DIR, DOCUMENTATION_DIR, EXCEL_EXPORT_CONFIG, FILES, ICONS_DIR,
+    APP_DIR, APP_SETTINGS_CONFIG, CONFIG_DIR, DATA_DIR, DOCUMENTATION_DIR,
+    EXCEL_EXPORT_CONFIG, FILES, ICONS_DIR,
     ICONS_GEN_DIR, ICON_APP, ICON_ARROW_DOWN, ICON_CALENDAR, ICON_DOCX,
     ICON_DONE_WORK, ICON_EQUIPMENT, ICON_EXCEL, ICON_ISSUES, ICON_LISTS,
     ICON_MATERIALS, ICON_QTY, ICON_SERIAL, ICON_SERVICES, ICON_STATION,
@@ -444,6 +445,26 @@ def save_links(links: List[Dict[str, str]]):
     ]
     with open(FILES["links"], "w", encoding="utf-8") as f:
         json.dump(clean, f, ensure_ascii=False, indent=2)
+
+
+def load_app_settings() -> Dict[str, bool]:
+    settings = {"preview_before_save": True}
+    try:
+        with open(APP_SETTINGS_CONFIG, "r", encoding="utf-8") as stream:
+            saved = json.load(stream)
+        if isinstance(saved, dict) and isinstance(saved.get("preview_before_save"), bool):
+            settings["preview_before_save"] = saved["preview_before_save"]
+    except (OSError, json.JSONDecodeError):
+        pass
+    return settings
+
+
+def save_app_settings(settings: Dict[str, bool]):
+    os.makedirs(os.path.dirname(APP_SETTINGS_CONFIG), exist_ok=True)
+    temporary_path = APP_SETTINGS_CONFIG + ".tmp"
+    with open(temporary_path, "w", encoding="utf-8") as stream:
+        json.dump(settings, stream, ensure_ascii=False, indent=2)
+    os.replace(temporary_path, APP_SETTINGS_CONFIG)
 
 
 # -----------------------------
@@ -914,9 +935,10 @@ class ActPreviewDialog(QDialog):
         layout.addWidget(self.preview, 1)
 
         controls = QHBoxLayout()
-        open_button = QPushButton("Открыть документ")
-        open_button.clicked.connect(lambda: open_file(self.temporary_path))
-        controls.addWidget(open_button)
+        self.open_button = QPushButton("Открыть документ")
+        self.open_button.setToolTip("Станет доступно после подготовки предпросмотра")
+        self.open_button.clicked.connect(lambda: open_file(self.temporary_path))
+        controls.addWidget(self.open_button)
 
         self.fit_button = QPushButton("По ширине")
         self.fit_button.clicked.connect(
@@ -943,6 +965,7 @@ class ActPreviewDialog(QDialog):
         layout.addLayout(controls)
 
         for button in (
+            self.open_button,
             self.fit_button,
             self.zoom_out_button,
             self.zoom_in_button,
@@ -1001,7 +1024,9 @@ class ActPreviewDialog(QDialog):
         self.preview.setDocument(self.pdf_document)
         self.loading_label.hide()
         self.preview.show()
+        self.open_button.setToolTip("")
         for button in (
+            self.open_button,
             self.fit_button,
             self.zoom_out_button,
             self.zoom_in_button,
@@ -1043,6 +1068,7 @@ class MainWindow(QMainWindow):
 
         self.dark_theme = True
         self.links = load_links()
+        self.app_settings = load_app_settings()
 
         self.data_lists = {
             key: read_lines(path)
@@ -1206,6 +1232,17 @@ class MainWindow(QMainWindow):
         )
         self.choose_excel_workbook()
 
+    def set_preview_enabled(self, enabled: bool):
+        self.app_settings["preview_before_save"] = bool(enabled)
+        try:
+            save_app_settings(self.app_settings)
+        except OSError as error:
+            QMessageBox.warning(
+                self,
+                "Настройки",
+                f"Не удалось сохранить настройку предпросмотра:\n{error}",
+            )
+
     def _build_topbar(self) -> QWidget:
         bar = QFrame()
         bar.setObjectName("TopBar")
@@ -1218,6 +1255,15 @@ class MainWindow(QMainWindow):
         self.act_check_updates = QAction("Проверить обновления", self)
         self.act_check_updates.triggered.connect(self.check_for_updates)
         self.menu_file.addAction(self.act_check_updates)
+        self.menu_file.addSeparator()
+
+        self.act_preview_enabled = QAction("Предпросмотр перед сохранением", self)
+        self.act_preview_enabled.setCheckable(True)
+        self.act_preview_enabled.setChecked(
+            self.app_settings.get("preview_before_save", True)
+        )
+        self.act_preview_enabled.toggled.connect(self.set_preview_enabled)
+        self.menu_file.addAction(self.act_preview_enabled)
         self.menu_file.addSeparator()
 
         self.act_select_excel = QAction("Выбрать Excel-таблицу…", self)
@@ -1696,19 +1742,22 @@ class MainWindow(QMainWindow):
             base = safe_filename(f"Акт_{location or 'БезСтанции'}_{serial or 'БезККТ'}_{ts}")
             out_path = os.path.join(OUTPUT_DIR, base + ".docx")
 
-            with tempfile.TemporaryDirectory(
-                prefix="actgenerator-preview-", ignore_cleanup_errors=True
-            ) as preview_dir:
-                preview_path = os.path.join(preview_dir, base + ".docx")
-                doc.save(preview_path)
-                preview = ActPreviewDialog(preview_path, self)
-                if preview.exec() != QDialog.Accepted:
-                    self.lbl_status.setText(
-                        "Сохранение отменено. Можно изменить данные и снова открыть предпросмотр."
-                    )
-                    return
-                os.makedirs(OUTPUT_DIR, exist_ok=True)
-                shutil.copy2(preview_path, out_path)
+            os.makedirs(OUTPUT_DIR, exist_ok=True)
+            if self.app_settings.get("preview_before_save", True):
+                with tempfile.TemporaryDirectory(
+                    prefix="actgenerator-preview-", ignore_cleanup_errors=True
+                ) as preview_dir:
+                    preview_path = os.path.join(preview_dir, base + ".docx")
+                    doc.save(preview_path)
+                    preview = ActPreviewDialog(preview_path, self)
+                    if preview.exec() != QDialog.Accepted:
+                        self.lbl_status.setText(
+                            "Сохранение отменено. Можно изменить данные и снова открыть предпросмотр."
+                        )
+                        return
+                    shutil.copy2(preview_path, out_path)
+            else:
+                doc.save(out_path)
 
             excel_status = "Excel: таблица не выбрана."
             workbook_path = load_excel_path(EXCEL_EXPORT_CONFIG)

@@ -35,6 +35,7 @@ DOCUMENTATION_DIR = os.path.join(OTHER_DIR, "Documentation")
 OUTPUT_DIR = os.path.join(APP_DIR, "Acts")
 LEGACY_OUTPUT_DIR = os.path.join(APP_DIR, "Act_Ready")
 EXCEL_EXPORT_CONFIG = os.path.join(CONFIG_DIR, "excel_export.json")
+APP_SETTINGS_CONFIG = os.path.join(CONFIG_DIR, "app_settings.json")
 
 # User interface icons.  Missing optional icons are handled by app.py.
 ICON_APP = os.path.join(ICONS_DIR, "app.ico")
