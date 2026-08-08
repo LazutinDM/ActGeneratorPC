@@ -19,7 +19,7 @@ from functools import partial
 from update_manager import UpdateManager, confirm_healthy_startup
 from PySide6.QtCore import (
     Qt, QUrl, QSignalBlocker, QStringListModel, QEvent, QTimer,
-    QByteArray, QBuffer, QIODevice,
+    QByteArray, QBuffer, QIODevice, QThread,
 )
 from PySide6.QtPdf import QPdfDocument
 from PySide6.QtPdfWidgets import QPdfView
@@ -865,13 +865,34 @@ class SearchCombo(QComboBox):
         return (self.currentText() or "").strip()
 
 
+class PreviewRenderThread(QThread):
+    """Render a DOCX without blocking construction of the preview dialog."""
+
+    def __init__(self, temporary_path: str, parent=None):
+        super().__init__(parent)
+        self.temporary_path = temporary_path
+        self.pdf_path = None
+        self.error = None
+
+    def run(self):
+        try:
+            self.pdf_path = render_docx_to_pdf(self.temporary_path)
+        except Exception as error:
+            self.error = error
+
+
 class ActPreviewDialog(QDialog):
     """Show the populated document as real rendered pages before saving."""
 
     def __init__(self, temporary_path: str, parent=None):
         super().__init__(parent)
         self.temporary_path = temporary_path
-        self.pdf_path = render_docx_to_pdf(temporary_path)
+        self.pdf_path = None
+        self.pdf_bytes = None
+        self.pdf_buffer = None
+        self.pdf_document = None
+        self._loading_step = 0
+        self._cancel_requested = False
         self.setWindowTitle("Предпросмотр акта")
         self.resize(980, 780)
 
@@ -883,6 +904,88 @@ class ActPreviewDialog(QDialog):
         info.setWordWrap(True)
         layout.addWidget(info)
 
+        self.loading_label = QLabel("Подготавливаем визуальный предпросмотр…")
+        self.loading_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.loading_label, 1)
+        self.preview = QPdfView(self)
+        self.preview.setPageMode(QPdfView.PageMode.MultiPage)
+        self.preview.setZoomMode(QPdfView.ZoomMode.FitToWidth)
+        self.preview.hide()
+        layout.addWidget(self.preview, 1)
+
+        controls = QHBoxLayout()
+        open_button = QPushButton("Открыть документ")
+        open_button.clicked.connect(lambda: open_file(self.temporary_path))
+        controls.addWidget(open_button)
+
+        self.fit_button = QPushButton("По ширине")
+        self.fit_button.clicked.connect(
+            lambda: self.preview.setZoomMode(QPdfView.ZoomMode.FitToWidth)
+        )
+        self.zoom_out_button = QPushButton("−")
+        self.zoom_out_button.setFixedWidth(42)
+        self.zoom_out_button.clicked.connect(lambda: self._zoom(0.85))
+        self.zoom_in_button = QPushButton("+")
+        self.zoom_in_button.setFixedWidth(42)
+        self.zoom_in_button.clicked.connect(lambda: self._zoom(1.15))
+        controls.addWidget(self.fit_button)
+        controls.addWidget(self.zoom_out_button)
+        controls.addWidget(self.zoom_in_button)
+        controls.addStretch(1)
+
+        self.back_button = QPushButton("Вернуться к редактированию")
+        self.back_button.clicked.connect(self.reject)
+        self.save_button = QPushButton("Подтвердить и сохранить")
+        self.save_button.setDefault(True)
+        self.save_button.clicked.connect(self.accept)
+        controls.addWidget(self.back_button)
+        controls.addWidget(self.save_button)
+        layout.addLayout(controls)
+
+        for button in (
+            self.fit_button,
+            self.zoom_out_button,
+            self.zoom_in_button,
+            self.save_button,
+        ):
+            button.setEnabled(False)
+
+        self.loading_timer = QTimer(self)
+        self.loading_timer.setInterval(350)
+        self.loading_timer.timeout.connect(self._animate_loading)
+        self.loading_timer.start()
+
+        self.render_thread = PreviewRenderThread(temporary_path, self)
+        self.render_thread.finished.connect(self._render_finished)
+        self.render_thread.start()
+
+    def _animate_loading(self):
+        self._loading_step = (self._loading_step + 1) % 4
+        self.loading_label.setText(
+            "Подготавливаем визуальный предпросмотр" + "." * self._loading_step
+        )
+
+    def _render_finished(self):
+        self.loading_timer.stop()
+        if self._cancel_requested:
+            super().done(QDialog.Rejected)
+            return
+        if self.render_thread.error is not None:
+            QMessageBox.critical(
+                self,
+                "Ошибка предпросмотра",
+                str(self.render_thread.error),
+            )
+            super().done(QDialog.Rejected)
+            return
+        try:
+            self._load_pdf(self.render_thread.pdf_path)
+        except (OSError, PreviewRenderError) as error:
+            QMessageBox.critical(self, "Ошибка предпросмотра", str(error))
+            super().done(QDialog.Rejected)
+
+    def _load_pdf(self, pdf_path: str):
+        self.pdf_path = pdf_path
         with open(self.pdf_path, "rb") as pdf_file:
             self.pdf_bytes = QByteArray(pdf_file.read())
         self.pdf_buffer = QBuffer(self)
@@ -895,49 +998,33 @@ class ActPreviewDialog(QDialog):
         if load_error is not None and load_error != QPdfDocument.Error.None_:
             raise PreviewRenderError(f"Qt не смог открыть PDF предпросмотра: {load_error}")
 
-        self.preview = QPdfView(self)
         self.preview.setDocument(self.pdf_document)
-        self.preview.setPageMode(QPdfView.PageMode.MultiPage)
-        self.preview.setZoomMode(QPdfView.ZoomMode.FitToWidth)
-        layout.addWidget(self.preview, 1)
-
-        controls = QHBoxLayout()
-        open_button = QPushButton("Открыть документ")
-        open_button.clicked.connect(lambda: open_file(self.temporary_path))
-        controls.addWidget(open_button)
-
-        fit_button = QPushButton("По ширине")
-        fit_button.clicked.connect(
-            lambda: self.preview.setZoomMode(QPdfView.ZoomMode.FitToWidth)
-        )
-        zoom_out_button = QPushButton("−")
-        zoom_out_button.setFixedWidth(42)
-        zoom_out_button.clicked.connect(lambda: self._zoom(0.85))
-        zoom_in_button = QPushButton("+")
-        zoom_in_button.setFixedWidth(42)
-        zoom_in_button.clicked.connect(lambda: self._zoom(1.15))
-        controls.addWidget(fit_button)
-        controls.addWidget(zoom_out_button)
-        controls.addWidget(zoom_in_button)
-        controls.addStretch(1)
-
-        back_button = QPushButton("Вернуться к редактированию")
-        back_button.clicked.connect(self.reject)
-        save_button = QPushButton("Подтвердить и сохранить")
-        save_button.setDefault(True)
-        save_button.clicked.connect(self.accept)
-        controls.addWidget(back_button)
-        controls.addWidget(save_button)
-        layout.addLayout(controls)
+        self.loading_label.hide()
+        self.preview.show()
+        for button in (
+            self.fit_button,
+            self.zoom_out_button,
+            self.zoom_in_button,
+            self.save_button,
+        ):
+            button.setEnabled(True)
 
     def _zoom(self, factor: float):
         self.preview.setZoomMode(QPdfView.ZoomMode.Custom)
         self.preview.setZoomFactor(max(0.25, min(4.0, self.preview.zoomFactor() * factor)))
 
     def done(self, result: int):
-        self.preview.setDocument(None)
-        self.pdf_document.close()
-        self.pdf_buffer.close()
+        if self.render_thread.isRunning():
+            self._cancel_requested = True
+            self.loading_label.setText("Завершаем подготовку предпросмотра…")
+            self.save_button.setEnabled(False)
+            self.back_button.setEnabled(False)
+            return
+        if self.pdf_document is not None:
+            self.preview.setDocument(None)
+            self.pdf_document.close()
+        if self.pdf_buffer is not None:
+            self.pdf_buffer.close()
         super().done(result)
 
 

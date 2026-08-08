@@ -1,5 +1,6 @@
 import os
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -46,11 +47,23 @@ class UiSmokeTests(unittest.TestCase):
             del painter
             del writer
 
-            with patch("app.render_docx_to_pdf", return_value=str(pdf_path)):
+            release_renderer = threading.Event()
+
+            def delayed_renderer(_path):
+                release_renderer.wait(2)
+                return str(pdf_path)
+
+            with patch("app.render_docx_to_pdf", side_effect=delayed_renderer):
                 dialog = ActPreviewDialog(str(dummy_docx))
                 try:
+                    self.assertTrue(dialog.render_thread.isRunning())
+                    self.assertIsNone(dialog.pdf_document)
+                    release_renderer.set()
+                    self.assertTrue(dialog.render_thread.wait(3000))
+                    self.application.processEvents()
                     self.assertEqual(1, dialog.pdf_document.pageCount())
                     self.assertIs(dialog.pdf_document, dialog.preview.document())
+                    self.assertTrue(dialog.save_button.isEnabled())
                 finally:
                     dialog.reject()
 
