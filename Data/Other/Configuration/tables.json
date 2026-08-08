@@ -1,0 +1,22 @@
+[
+  {
+    "name": "Таблица Зав № КО постанционно",
+    "link": "https://docs.google.com/spreadsheets/d/1Y5YLY2sqokyPYJw-_Sr2Cl9UK99MbW4NslK1b5LBWS8/edit?gid=408849183#gid=408849183",
+    "icon": ""
+  },
+  {
+    "name": "Таблица ремонтов",
+    "link": "https://docs.google.com/spreadsheets/d/1seASZT9HmjDE3amDtgpz-rAdW23NfriKdBlDGZayMgM/edit?gid=1850456699#gid=1850456699",
+    "icon": ""
+  },
+  {
+    "name": "Таблица ТО",
+    "link": "https://docs.google.com/spreadsheets/d/1v8_3wWWaCZPBFpqf_srbwE_c5WdSwy34lq6fMKMtLfQ/edit?gid=727786381#gid=727786381",
+    "icon": ""
+  },
+  {
+    "name": "Сайт МикроТех",
+    "link": "http://cto-microteh.net",
+    "icon": "Data/icons/logo.png"
+  }
+]
