@@ -33,6 +33,12 @@ jobs:
           $Config.repository = "${{ github.repository }}"
           $Config | ConvertTo-Json | Set-Content -LiteralPath "update_config.json" -Encoding utf8
 
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-build.txt
+
       - name: Check function documentation
         shell: pwsh
         run: python tools/check_function_docs.py
