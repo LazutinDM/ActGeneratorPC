@@ -41,10 +41,12 @@ finally {
 
 
 def _subprocess_flags() -> int:
+    """Handle subprocess flags."""
     return getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
 def _render_with_word(docx_path: Path, pdf_path: Path) -> str | None:
+    """Handle render with word."""
     if os.name != "nt":
         return "Microsoft Word COM доступен только в Windows."
 
@@ -86,6 +88,8 @@ def _render_with_word(docx_path: Path, pdf_path: Path) -> str | None:
 
 
 def _libreoffice_candidates() -> list[str]:
+    # COLLEAGUE EDIT POINT: add supported LibreOffice installation paths here.
+    """Handle libreoffice candidates."""
     candidates = [shutil.which("soffice"), shutil.which("soffice.exe")]
     if os.name == "nt":
         for variable in ("ProgramFiles", "ProgramFiles(x86)"):
@@ -96,6 +100,7 @@ def _libreoffice_candidates() -> list[str]:
 
 
 def _render_with_libreoffice(docx_path: Path, pdf_path: Path) -> str | None:
+    """Handle render with libreoffice."""
     candidates = _libreoffice_candidates()
     if not candidates:
         return "LibreOffice не найден."

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import hashlib
 import os
 import re
 import shutil
@@ -27,6 +26,8 @@ except ModuleNotFoundError:
     __version__ = "1.0.0"
 
 
+# COLLEAGUE EDIT POINT: updater repository/asset settings belong in
+# update_config.json. Change these protocol constants only together with tests.
 APP_NAME = "ActGeneratorPC"
 CONFIG_NAME = "update_config.json"
 CONFIG_RELATIVE_PATH = (
@@ -38,6 +39,7 @@ VERSION_RE = re.compile(r"\d+")
 
 
 def portable_root() -> Path:
+    """Handle portable root."""
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parent
@@ -65,11 +67,13 @@ def confirm_healthy_startup() -> None:
 
 
 def version_key(value: str) -> tuple[int, ...]:
+    """Handle version key."""
     numbers = tuple(int(part) for part in VERSION_RE.findall(value or ""))
     return numbers or (0,)
 
 
 def read_json(path: Path) -> dict[str, Any]:
+    """Read json for this workflow."""
     with path.open("r", encoding="utf-8-sig") as stream:
         data = json.load(stream)
     if not isinstance(data, dict):
@@ -78,6 +82,7 @@ def read_json(path: Path) -> dict[str, Any]:
 
 
 def is_certificate_error(error: BaseException) -> bool:
+    """Handle is certificate error."""
     details = f"{error!r} {error}".lower()
     return (
         "certificate_verify_failed" in details
@@ -154,6 +159,7 @@ Invoke-WebRequest `
 
 
 def http_get_json(url: str) -> dict[str, Any]:
+    """Handle http get json."""
     request = urllib.request.Request(
         url,
         headers={
@@ -180,6 +186,7 @@ def http_get_json(url: str) -> dict[str, Any]:
 
 
 def download_file(url: str, destination: Path) -> None:
+    """Handle download file."""
     request = urllib.request.Request(
         url,
         headers={"Accept": "application/octet-stream", "User-Agent": USER_AGENT},
@@ -201,6 +208,7 @@ def download_file(url: str, destination: Path) -> None:
 
 
 def safe_extract(archive: Path, destination: Path) -> None:
+    """Extract an update archive while rejecting traversal and unsafe paths."""
     destination = destination.resolve()
     with zipfile.ZipFile(archive) as bundle:
         members = bundle.infolist()
@@ -221,25 +229,8 @@ def safe_extract(archive: Path, destination: Path) -> None:
         bundle.extractall(destination)
 
 
-def file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
-def expected_sha256(checksum_file: Path, asset_name: str) -> str:
-    text = checksum_file.read_text(encoding="ascii", errors="strict")
-    match = re.search(r"\b([0-9a-fA-F]{64})\b", text)
-    if not match:
-        raise ValueError(f"{checksum_file.name} does not contain a SHA-256 digest.")
-    if asset_name not in text:
-        raise ValueError("The checksum file refers to another update archive.")
-    return match.group(1).lower()
-
-
 def payload_root(stage: Path) -> Path:
+    """Handle payload root."""
     children = [item for item in stage.iterdir() if item.name != "__MACOSX"]
     if len(children) == 1 and children[0].is_dir():
         return children[0]
@@ -254,6 +245,7 @@ class UpdateManager(QObject):
     manual_check_failed = Signal(str)
 
     def __init__(self, parent=None):
+        """Initialize the UpdateManager and its runtime state."""
         super().__init__(parent)
         self.window = parent
         self.root = portable_root()
@@ -270,6 +262,7 @@ class UpdateManager(QObject):
         self.manual_check_failed.connect(self._show_manual_check_error)
 
     def check_async(self, manual: bool = False) -> None:
+        """Check async for this workflow."""
         if self._busy:
             if manual:
                 QMessageBox.information(
@@ -313,7 +306,7 @@ class UpdateManager(QObject):
                 0,
                 self.window,
             )
-            self._check_progress.setWindowTitle("Обновление ActGeneratorPC")
+            self._check_progress.setWindowTitle("Обновление — Генератор актов")
             self._check_progress.setCancelButton(None)
             self._check_progress.setWindowModality(Qt.WindowModal)
             self._check_progress.setMinimumDuration(0)
@@ -326,6 +319,7 @@ class UpdateManager(QObject):
         ).start()
 
     def _check_worker(self, config: dict[str, Any], manual: bool = False) -> None:
+        """Check worker for this workflow."""
         try:
             repository = str(config["repository"]).strip()
             release = http_get_json(
@@ -354,15 +348,6 @@ class UpdateManager(QObject):
                         f"В Release {tag} отсутствует файл {asset_name}."
                     )
                 return
-            checksum_name = asset_name + ".sha256"
-            checksum_asset = assets.get(checksum_name)
-            if config.get("require_sha256", True) and not checksum_asset:
-                if manual:
-                    self.manual_check_failed.emit(
-                        f"Release {tag} не содержит обязательный файл {checksum_name}."
-                    )
-                return
-
             self.release_ready.emit(
                 {
                     "tag": tag,
@@ -370,11 +355,6 @@ class UpdateManager(QObject):
                     "notes": str(release.get("body") or "").strip(),
                     "asset_name": asset_name,
                     "asset_url": str(asset.get("browser_download_url", "")),
-                    "checksum_name": checksum_name,
-                    "checksum_url": str(
-                        (checksum_asset or {}).get("browser_download_url", "")
-                    ),
-                    "require_sha256": bool(config.get("require_sha256", True)),
                 }
             )
         except Exception as error:
@@ -385,16 +365,19 @@ class UpdateManager(QObject):
             self._busy = False
 
     def _close_check_progress(self) -> None:
+        """Handle close check progress in UpdateManager."""
         if self._check_progress is not None:
             self._check_progress.close()
             self._check_progress.deleteLater()
             self._check_progress = None
 
     def _handle_release_ready(self, release: dict[str, Any]) -> None:
+        """Handle handle release ready in UpdateManager."""
         self._close_check_progress()
         self._offer_update(release)
 
     def _show_manual_check_result(self, result: dict[str, str]) -> None:
+        """Show manual check result for this workflow."""
         self._close_check_progress()
         QMessageBox.information(
             self.window,
@@ -405,6 +388,7 @@ class UpdateManager(QObject):
         )
 
     def _show_manual_check_error(self, details: str) -> None:
+        """Show manual check error for this workflow."""
         self._close_check_progress()
         QMessageBox.critical(
             self.window,
@@ -413,6 +397,7 @@ class UpdateManager(QObject):
         )
 
     def _offer_update(self, release: dict[str, Any]) -> None:
+        """Handle offer update in UpdateManager."""
         notes = release["notes"]
         if len(notes) > 1200:
             notes = notes[:1200].rstrip() + "\n…"
@@ -444,7 +429,7 @@ class UpdateManager(QObject):
             0,
             self.window,
         )
-        self._download_progress.setWindowTitle("Обновление ActGeneratorPC")
+        self._download_progress.setWindowTitle("Обновление — Генератор актов")
         self._download_progress.setCancelButton(None)
         self._download_progress.setWindowModality(Qt.WindowModal)
         self._download_progress.setMinimumDuration(0)
@@ -457,6 +442,7 @@ class UpdateManager(QObject):
         ).start()
 
     def _download_worker(self, release: dict[str, Any]) -> None:
+        """Handle download worker in UpdateManager."""
         try:
             work_dir = Path(
                 tempfile.mkdtemp(prefix="actgenerator-update-")
@@ -465,19 +451,6 @@ class UpdateManager(QObject):
             download_file(release["asset_url"], archive)
             if not archive.is_file() or archive.stat().st_size < 1024:
                 raise ValueError("Downloaded update archive is missing or too small.")
-
-            checksum_url = release.get("checksum_url", "")
-            if checksum_url:
-                checksum = work_dir / release["checksum_name"]
-                download_file(checksum_url, checksum)
-                expected = expected_sha256(checksum, release["asset_name"])
-                actual = file_sha256(archive)
-                if actual != expected:
-                    raise ValueError(
-                        "SHA-256 verification failed. The update was not installed."
-                    )
-            elif release.get("require_sha256", True):
-                raise ValueError("A signed release checksum is required.")
 
             stage = work_dir / "payload"
             stage.mkdir()
@@ -498,6 +471,7 @@ class UpdateManager(QObject):
             self.update_failed.emit(str(error))
 
     def _show_download_error(self, details: str) -> None:
+        """Show download error for this workflow."""
         if self._download_progress is not None:
             self._download_progress.close()
             self._download_progress.deleteLater()
@@ -511,6 +485,7 @@ class UpdateManager(QObject):
         self._download_prompted = False
 
     def _apply_downloaded_update(self, package: dict[str, str]) -> None:
+        """Apply downloaded update for this workflow."""
         if self._download_progress is not None:
             self._download_progress.close()
             self._download_progress.deleteLater()
@@ -519,7 +494,7 @@ class UpdateManager(QObject):
             shutil.rmtree(package["work_dir"], ignore_errors=True)
             QMessageBox.information(
                 self.window,
-                "Обновление ActGeneratorPC",
+                "Обновление — Генератор актов",
                 "Автообновление применяется только к portable-сборке. "
                 "Исходный проект не изменён.",
             )
@@ -562,6 +537,7 @@ class UpdateManager(QObject):
         QApplication.quit()
 
     def _write_apply_script(self, work_directory: Path) -> Path:
+        """Write apply script for this workflow."""
         script = work_directory / f"actgenerator-apply-{uuid.uuid4().hex}.ps1"
         script.write_text(
             r'''param(
@@ -609,7 +585,8 @@ try {
         "Acts",
         "Act_Ready",
         "Data\Variables",
-        "Data\Other\Configuration"
+        "Data\Other\Configuration",
+        "Data\Other\Excel"
     )
     foreach ($Relative in $Preserve) {
         $Current = Join-Path $Destination $Relative

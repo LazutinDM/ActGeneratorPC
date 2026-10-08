@@ -32,6 +32,12 @@ class UpdateRollbackTests(unittest.TestCase):
             payload_defaults = payload / "Data" / "Variables"
             payload_defaults.mkdir(parents=True)
             (payload_defaults / "defaults.txt").write_text("replace", encoding="utf-8")
+            excel_data = destination / "Data" / "Other" / "Excel"
+            excel_data.mkdir(parents=True)
+            (excel_data / "Tables.xlsx").write_text("keep workbook", encoding="utf-8")
+            payload_excel = payload / "Data" / "Other" / "Excel"
+            payload_excel.mkdir(parents=True)
+            (payload_excel / "Tables.xlsx").write_text("replace workbook", encoding="utf-8")
             (destination / "Data" / "python312.dll").write_text(
                 "old runtime", encoding="utf-8"
             )
@@ -71,6 +77,12 @@ class UpdateRollbackTests(unittest.TestCase):
             self.assertEqual(
                 "old runtime",
                 (destination / "Data" / "python312.dll").read_text(encoding="utf-8"),
+            )
+            self.assertEqual(
+                "keep workbook",
+                (destination / "Data" / "Other" / "Excel" / "Tables.xlsx").read_text(
+                    encoding="utf-8"
+                ),
             )
 
 

@@ -17,8 +17,10 @@ a = Analysis(
     noarchive=False,
     optimize=0,
 )
+
 pyz = PYZ(a.pure)
 
+# COLLEAGUE EDIT POINT: Windows executable name, icon and Data runtime folder.
 exe = EXE(
     pyz,
     a.scripts,
@@ -30,8 +32,6 @@ exe = EXE(
     strip=False,
     upx=True,
     console=False,
-    # Keep the PyInstaller runtime beside application data in one Data folder.
-    # PyInstaller supports exactly one contents-directory level in onedir mode.
     contents_directory="Data",
     icon=str(icon_path) if icon_path.exists() else None,
 )

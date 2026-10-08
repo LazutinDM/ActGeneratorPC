@@ -19,7 +19,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: "3.12.10"
           cache: "pip"
           cache-dependency-path: requirements-build.txt
 
@@ -33,6 +33,14 @@ jobs:
           $Config.repository = "${{ github.repository }}"
           $Config | ConvertTo-Json | Set-Content -LiteralPath "update_config.json" -Encoding utf8
 
+      - name: Check function documentation
+        shell: pwsh
+        run: python tools/check_function_docs.py
+
+      - name: Run tests
+        shell: pwsh
+        run: python -m unittest discover -s tests -v
+
       - name: Build portable ZIP
         shell: pwsh
         run: ./build.ps1
@@ -45,4 +53,4 @@ jobs:
           gh release create "${{ github.ref_name }}" `
             "dist/ActGeneratorPC-portable.zip#ActGeneratorPC portable for Windows" `
             --verify-tag `
-            --generate-notes
+            --notes ""

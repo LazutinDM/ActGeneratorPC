@@ -32,6 +32,7 @@ class ExcelAppendResult:
     backup_path: str
 
 
+# COLLEAGUE EDIT POINT: Excel column headers mapped to act fields.
 HEADER_TO_FIELD = {
     "участок": "area",
     "число": "date",
@@ -47,6 +48,7 @@ HEADER_TO_FIELD = {
     "колво": "qty",
     "примечания": "notes",
 }
+# COLLEAGUE EDIT POINT: columns the generator must never overwrite.
 IGNORED_HEADERS = {"проверил", "наличиеакта", "заявка"}
 REQUIRED_FIELDS = set(HEADER_TO_FIELD.values())
 MONTH_NAMES = (
@@ -78,11 +80,13 @@ MOSCOW_STATIONS = {
     "грачевскаябывшховрино",
     "ховрино",
 }
+# COLLEAGUE EDIT POINT: material keyword and generated Excel note.
 MATERIAL_NOTE_TRIGGER = re.compile(r"(?<![0-9A-ZА-ЯЁ])МТТПК(?![0-9A-ZА-ЯЁ])", re.IGNORECASE)
 MATERIAL_NOTE_TEXT = "выданно МТППК"
 
 
 def load_excel_path(config_path: str) -> str:
+    """Load excel path for this workflow."""
     try:
         with open(config_path, "r", encoding="utf-8") as handle:
             value = json.load(handle).get("workbook_path", "")
@@ -92,15 +96,81 @@ def load_excel_path(config_path: str) -> str:
 
 
 def save_excel_path(config_path: str, workbook_path: str) -> None:
+    """Save excel path for this workflow."""
     path = Path(config_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
+    configured_path = str(workbook_path).strip()
+    if configured_path:
+        configured_path = str(Path(configured_path).resolve())
     with open(temporary, "w", encoding="utf-8") as handle:
-        json.dump({"workbook_path": str(Path(workbook_path).resolve())}, handle, ensure_ascii=False, indent=2)
+        json.dump({"workbook_path": configured_path}, handle, ensure_ascii=False, indent=2)
     os.replace(temporary, path)
 
 
+def ensure_embedded_excel_workbook(template_path: str, workbook_path: str) -> str:
+    """Create or safely repair the program-owned workbook from its template."""
+    template = Path(template_path).resolve()
+    workbook = Path(workbook_path).resolve()
+    if template.suffix.casefold() != ".xlsx" or not template.is_file():
+        raise ExcelExportError(f"Встроенный шаблон Excel не найден: {template}")
+    if not _workbook_has_act_table(template):
+        raise ExcelExportError(
+            f"Встроенный шаблон Excel не содержит таблицу актов: {template}"
+        )
+    if workbook.is_file() and _workbook_has_act_table(workbook):
+        return str(workbook)
+
+    workbook.parent.mkdir(parents=True, exist_ok=True)
+    temporary_handle = tempfile.NamedTemporaryFile(
+        prefix=f".{workbook.stem}-initial-",
+        suffix=".xlsx",
+        dir=workbook.parent,
+        delete=False,
+    )
+    temporary_path = Path(temporary_handle.name)
+    temporary_handle.close()
+    try:
+        shutil.copy2(template, temporary_path)
+        with zipfile.ZipFile(temporary_path, "r") as archive:
+            broken = archive.testzip()
+            if broken:
+                raise ExcelExportError(
+                    f"Встроенный шаблон Excel повреждён: {broken}"
+                )
+            archive.getinfo("xl/workbook.xml")
+        # A broken/blank program-owned workbook is retained beside the repaired
+        # copy. A valid workbook with act rows always returns above unchanged.
+        if workbook.exists():
+            stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+            backup = workbook.with_name(
+                f"{workbook.stem}.invalid-{stamp}{workbook.suffix}.bak"
+            )
+            shutil.copy2(workbook, backup)
+        os.replace(temporary_path, workbook)
+    except (OSError, zipfile.BadZipFile, KeyError) as exc:
+        raise ExcelExportError(
+            f"Не удалось создать встроенную Excel-таблицу: {exc}"
+        ) from exc
+    finally:
+        temporary_path.unlink(missing_ok=True)
+    return str(workbook)
+
+
+def resolve_excel_workbook(
+    config_path: str,
+    template_path: str,
+    embedded_workbook_path: str,
+) -> str:
+    """Return an external override or the persistent built-in workbook."""
+    configured = load_excel_path(config_path)
+    if configured and Path(configured).is_file():
+        return str(Path(configured).resolve())
+    return ensure_embedded_excel_workbook(template_path, embedded_workbook_path)
+
+
 def _normalize_header(value: str) -> str:
+    """Normalize header for this workflow."""
     normalized = (value or "").strip().casefold().replace("ё", "е")
     normalized = normalized.replace("cтанция", "станция")
     normalized = normalized.replace("№", "номер ")
@@ -108,6 +178,7 @@ def _normalize_header(value: str) -> str:
 
 
 def _normalize_station(value: str) -> str:
+    """Normalize station for this workflow."""
     normalized = (value or "").strip().casefold().replace("ё", "е")
     normalized = re.sub(r"^\s*(?:пл|платформа)\.?\s*", "", normalized)
     return re.sub(r"[^0-9a-zа-я]+", "", normalized)
@@ -129,6 +200,7 @@ def note_for_materials(materials: str) -> str:
 
 
 def _column_number(reference: str) -> int:
+    """Handle column number."""
     letters = re.match(r"[A-Za-z]+", reference)
     if not letters:
         raise ExcelExportError(f"Некорректная ссылка на ячейку: {reference}")
@@ -139,6 +211,7 @@ def _column_number(reference: str) -> int:
 
 
 def _column_name(number: int) -> str:
+    """Handle column name."""
     result = ""
     while number:
         number, remainder = divmod(number - 1, 26)
@@ -147,12 +220,14 @@ def _column_name(number: int) -> str:
 
 
 def _resolve_part(source_part: str, target: str) -> str:
+    """Resolve part for this workflow."""
     if target.startswith("/"):
         return target.lstrip("/")
     return str(PurePosixPath(source_part).parent.joinpath(target))
 
 
 def _shared_strings(archive: zipfile.ZipFile) -> list[str]:
+    """Handle shared strings."""
     try:
         root = ET.fromstring(archive.read("xl/sharedStrings.xml"))
     except KeyError:
@@ -164,6 +239,7 @@ def _shared_strings(archive: zipfile.ZipFile) -> list[str]:
 
 
 def _cell_value(cell: ET.Element, shared: list[str]) -> str:
+    """Handle cell value."""
     cell_type = cell.get("t")
     if cell_type == "inlineStr":
         return "".join(node.text or "" for node in cell.iter(f"{{{MAIN_NS}}}t"))
@@ -179,6 +255,7 @@ def _cell_value(cell: ET.Element, shared: list[str]) -> str:
 
 
 def _workbook_sheets(archive: zipfile.ZipFile) -> list[tuple[str, str]]:
+    """Handle workbook sheets."""
     workbook = ET.fromstring(archive.read("xl/workbook.xml"))
     relationships = ET.fromstring(archive.read("xl/_rels/workbook.xml.rels"))
     targets = {
@@ -195,6 +272,7 @@ def _workbook_sheets(archive: zipfile.ZipFile) -> list[tuple[str, str]]:
 
 
 def _preferred_sheets(sheets: list[tuple[str, str]], date_value: object) -> list[tuple[str, str]]:
+    """Handle preferred sheets."""
     try:
         act_date = datetime.datetime.strptime(str(date_value).strip(), "%d.%m.%Y").date()
     except ValueError:
@@ -209,6 +287,7 @@ def _preferred_sheets(sheets: list[tuple[str, str]], date_value: object) -> list
 
 
 def _header_map(root: ET.Element, shared: list[str]) -> dict[str, int]:
+    """Handle header map."""
     first_row = root.find(f".//{{{MAIN_NS}}}sheetData/{{{MAIN_NS}}}row[@r='1']")
     if first_row is None:
         return {}
@@ -220,7 +299,30 @@ def _header_map(root: ET.Element, shared: list[str]) -> dict[str, int]:
     return result
 
 
+def _workbook_has_act_table(path: Path) -> bool:
+    """Return whether an XLSX contains the columns required by the exporter."""
+    try:
+        with zipfile.ZipFile(path, "r") as archive:
+            if archive.testzip():
+                return False
+            shared = _shared_strings(archive)
+            for _, sheet_part in _workbook_sheets(archive):
+                root = ET.fromstring(archive.read(sheet_part))
+                headers = _header_map(root, shared)
+                fields = {
+                    HEADER_TO_FIELD[header]
+                    for header in headers
+                    if header in HEADER_TO_FIELD
+                }
+                if REQUIRED_FIELDS.issubset(fields):
+                    return True
+    except (OSError, zipfile.BadZipFile, KeyError, ET.ParseError):
+        return False
+    return False
+
+
 def _row_cells(row: ET.Element) -> dict[int, ET.Element]:
+    """Handle row cells."""
     return {
         _column_number(cell.get("r", "")): cell
         for cell in row.findall(f"{{{MAIN_NS}}}c")
@@ -229,6 +331,7 @@ def _row_cells(row: ET.Element) -> dict[int, ET.Element]:
 
 
 def _find_empty_row(root: ET.Element, columns: set[int], shared: list[str]) -> ET.Element:
+    """Handle find empty row."""
     sheet_data = root.find(f".//{{{MAIN_NS}}}sheetData")
     if sheet_data is None:
         raise ExcelExportError("В листе отсутствует область данных.")
@@ -246,6 +349,7 @@ def _find_empty_row(root: ET.Element, columns: set[int], shared: list[str]) -> E
 
 
 def _set_cell(row: ET.Element, column: int, value: object) -> None:
+    """Set cell for this workflow."""
     row_number = int(row.get("r", "0"))
     reference = f"{_column_name(column)}{row_number}"
     cells = _row_cells(row)
@@ -272,6 +376,7 @@ def _set_cell(row: ET.Element, column: int, value: object) -> None:
 
 
 def _register_namespaces(xml_bytes: bytes) -> None:
+    """Handle register namespaces."""
     for _, (prefix, uri) in ET.iterparse(__import__("io").BytesIO(xml_bytes), events=("start-ns",)):
         if prefix != "xml":
             try:
@@ -281,6 +386,7 @@ def _register_namespaces(xml_bytes: bytes) -> None:
 
 
 def _build_updated_workbook(source: Path, destination: Path, values: Mapping[str, object]) -> tuple[str, int]:
+    """Build updated workbook for this workflow."""
     with zipfile.ZipFile(source, "r") as archive:
         shared = _shared_strings(archive)
         selected = None

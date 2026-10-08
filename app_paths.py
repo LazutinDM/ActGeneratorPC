@@ -17,6 +17,8 @@ def resource_path(relative_path: str) -> str:
     return os.path.join(base, relative_path)
 
 
+# COLLEAGUE EDIT POINT: portable directory layout. Keep user data under Data or
+# Acts so the updater can preserve it safely.
 # APP_DIR is always the portable folder: beside app.py during development and
 # beside ActGeneratorPC.exe in a packaged build.
 APP_DIR = (
@@ -32,13 +34,24 @@ OTHER_DIR = os.path.join(DATA_DIR, "Other")
 CONFIG_DIR = os.path.join(OTHER_DIR, "Configuration")
 ICONS_GEN_DIR = os.path.join(OTHER_DIR, "GeneratedIcons")
 DOCUMENTATION_DIR = os.path.join(OTHER_DIR, "Documentation")
+HISTORY_DIR = os.path.join(OTHER_DIR, "History")
+EXCEL_WORK_DIR = os.path.join(OTHER_DIR, "Excel")
 OUTPUT_DIR = os.path.join(APP_DIR, "Acts")
 LEGACY_OUTPUT_DIR = os.path.join(APP_DIR, "Act_Ready")
+# These are old user-data folders that may be removed after migration.
+# Never add ``_internal``: PyInstaller stores the embedded Python runtime there.
+LEGACY_ROOT_FOLDERS = ("Templates", "icons", "_icons", "variables")
 EXCEL_EXPORT_CONFIG = os.path.join(CONFIG_DIR, "excel_export.json")
+EXCEL_TEMPLATE = os.path.join(TEMPLATES_DIR, "Tables.xlsx")
+EMBEDDED_EXCEL_WORKBOOK = os.path.join(EXCEL_WORK_DIR, "Tables.xlsx")
 APP_SETTINGS_CONFIG = os.path.join(CONFIG_DIR, "app_settings.json")
+EQUIPMENT_REGISTRY = os.path.join(VARIABLES_DIR, "station_serials.json")
 
-# User interface icons.  Missing optional icons are handled by app.py.
+# COLLEAGUE EDIT POINT: user interface icon filenames.
+# Missing optional icons are handled by app.py.
 ICON_APP = os.path.join(ICONS_DIR, "app.ico")
+ICON_BRAND = os.path.join(ICONS_DIR, "brand.png")
+ICON_MODES = os.path.join(ICONS_DIR, "modes.png")
 ICON_ARROW_DOWN = os.path.join(ICONS_DIR, "arrow_down.png")
 ICON_CALENDAR = os.path.join(ICONS_DIR, "calendar.png")
 ICON_DONE_WORK = os.path.join(ICONS_DIR, "done_work.png")
@@ -60,6 +73,7 @@ SPIN_DOWN_LIGHT_PNG = os.path.join(ICONS_GEN_DIR, "spin_down_light.png")
 SPIN_UP_DARK_PNG = os.path.join(ICONS_GEN_DIR, "spin_up_dark.png")
 SPIN_DOWN_DARK_PNG = os.path.join(ICONS_GEN_DIR, "spin_down_dark.png")
 
+# COLLEAGUE EDIT POINT: editable text-list filenames used by the form.
 FILES = {
     "executors": os.path.join(VARIABLES_DIR, "executor_list.txt"),
     "locations": os.path.join(VARIABLES_DIR, "location_list.txt"),
@@ -71,5 +85,6 @@ FILES = {
     "links": os.path.join(CONFIG_DIR, "tables.json"),
 }
 
+# COLLEAGUE EDIT POINT: DOCX templates selected by equipment type.
 TEMPLATE_TYPE1 = os.path.join(TEMPLATES_DIR, "ABP_MKTF.docx")
 TEMPLATE_TYPE2 = os.path.join(TEMPLATES_DIR, "Validator_MID.docx")
