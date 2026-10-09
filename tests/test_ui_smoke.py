@@ -11,7 +11,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QDate, QRectF, QSize
 from PySide6.QtGui import QPainter, QPdfWriter
-from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
+from PySide6.QtWidgets import QApplication, QDialog, QMessageBox, QToolButton
 from docx import Document
 
 from app import (
@@ -35,6 +35,7 @@ class UiSmokeTests(unittest.TestCase):
         try:
             self.assertEqual("Генератор актов", window.windowTitle())
             self.assertIsNotNone(window.btn_create)
+            self.assertEqual("Открыть акт", window.btn_open_last.text())
             self.assertIsNotNone(window.cb_executor)
             self.assertIsNotNone(window.cb_location)
             self.assertIsNotNone(window.cb_model)
@@ -56,6 +57,15 @@ class UiSmokeTests(unittest.TestCase):
             self.assertTrue(window.ed_date.calendarPopup())
             self.assertFalse(window.ed_date.isReadOnly())
             self.assertFalse(window.service_period_widget.isHidden())
+            self.assertEqual(QToolButton.MenuButtonPopup, window.btn_surname_act.popupMode())
+            self.assertEqual(2, len(window.btn_surname_act.menu().actions()))
+            for field in (
+                window.ed_date, window.cb_executor, window.cb_location,
+                window.cb_model, window.ed_serial, window.cb_work,
+                window.cb_issues, window.cb_done_work, window.cb_materials,
+                window.sp_qty, window.cb_template,
+            ):
+                self.assertEqual(42, field.height())
         finally:
             window.close()
 
@@ -73,8 +83,8 @@ class UiSmokeTests(unittest.TestCase):
             window.show()
             self.application.processEvents()
             self.assertGreater(
-                window.service_period_widget.geometry().top(),
-                window.cb_template.geometry().top(),
+                window.form_field_boxes["service_period"].geometry().top(),
+                window.form_field_boxes["template"].geometry().top(),
             )
             window.cb_model.setEditText("МКТФ")
             self.application.processEvents()
@@ -227,15 +237,15 @@ class UiSmokeTests(unittest.TestCase):
             config = json.load(stream)
         self.assertIs(config.get("check_on_start"), True)
 
-    def test_release_version_is_1_0_22(self):
-        self.assertEqual("1.0.22", __version__)
+    def test_release_version_is_1_0_24(self):
+        self.assertEqual("1.0.24", __version__)
 
     def test_date_field_keeps_manual_entry_and_uses_visible_picker_button(self):
         window = MainWindow()
         try:
             window.ed_date.setText("17.08.2026")
             self.assertEqual("17.08.2026", window.ed_date.text())
-            self.assertEqual(30, window.ed_date.calendar_button.width())
+            self.assertEqual(42, window.ed_date.calendar_button.width())
             self.assertFalse(window.ed_date.calendar_button.icon().isNull())
             window.ed_date.show_calendar()
             menu = window.ed_date._calendar_menu
@@ -305,7 +315,7 @@ class UiSmokeTests(unittest.TestCase):
             self.assertTrue(window.apply_equipment_for_serial())
             self.assertEqual("НОВОПОДРЕЗКОВО", window.cb_location.text())
             self.assertEqual("МКТФ", window.cb_model.text())
-            self.assertIn("52881", window.lbl_status.text())
+            self.assertFalse(hasattr(window, "serial_context_hint"))
 
             window.ed_serial.setText("999999")
             self.assertFalse(window.apply_equipment_for_serial())
@@ -357,7 +367,7 @@ class UiSmokeTests(unittest.TestCase):
             self.assertLessEqual(window.action_bar.height(), 70)
             self.assertLessEqual(window.cb_executor.height(), 44)
             self.assertEqual(42, window.sp_qty.height())
-            self.assertEqual(30, window.sp_qty.step_column.width())
+            self.assertEqual(42, window.sp_qty.step_column.width())
             self.assertFalse(window.sp_qty.up_button.icon().isNull())
             self.assertFalse(window.sp_qty.down_button.icon().isNull())
             self.assertEqual(QSize(12, 12), window.sp_qty.up_button.iconSize())
@@ -522,6 +532,11 @@ class UiSmokeTests(unittest.TestCase):
 
                 documents = list(output.glob("*.docx"))
                 self.assertEqual(1, len(documents))
+                self.assertTrue(window.btn_open_last.isEnabled())
+                self.assertEqual(str(documents[0]), window.last_created_act_path)
+                with patch("app.open_file") as open_document:
+                    window.open_last_created_act()
+                open_document.assert_called_once_with(str(documents[0]))
                 self.assertEqual(1, len(list((Path(directory) / "History").glob("*.json"))))
                 values = append.call_args.args[1]
                 self.assertEqual("Крюковский", values["area"])

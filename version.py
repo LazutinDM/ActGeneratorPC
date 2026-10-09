@@ -1,2 +1,2 @@
 # COLLEAGUE EDIT POINT: update before building and publishing a new release.
-__version__ = "1.0.22"
+__version__ = "1.0.24"

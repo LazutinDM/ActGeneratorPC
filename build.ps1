@@ -57,7 +57,9 @@ $ApplicationDataNames = @("Icons", "Other", "Templates", "Variables")
 if (-not [string]::IsNullOrWhiteSpace($CompatibilityRuntimeDir)) {
     $CompatibilityRuntimeDir = [System.IO.Path]::GetFullPath($CompatibilityRuntimeDir)
     $CompatibilityPython = Join-Path $CompatibilityRuntimeDir "python312.dll"
-    $CompatibilityQt = Join-Path $CompatibilityRuntimeDir "Qt6Core.dll"
+    # PyInstaller keeps Qt runtime DLLs inside Data\PySide6. Older builds
+    # checked the Data root and incorrectly rejected a complete portable.
+    $CompatibilityQt = Join-Path $CompatibilityRuntimeDir "PySide6\Qt6Core.dll"
     if (-not (Test-Path -LiteralPath $CompatibilityPython -PathType Leaf) -or
         -not (Test-Path -LiteralPath $CompatibilityQt -PathType Leaf)) {
         throw "Compatible runtime is incomplete: $CompatibilityRuntimeDir"

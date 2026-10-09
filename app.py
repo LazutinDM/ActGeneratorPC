@@ -35,7 +35,7 @@ from PySide6.QtWidgets import (
     QStyle, QComboBox, QCompleter, QToolButton, QMenu, QFrame,
     QGraphicsDropShadowEffect, QFileDialog, QScrollArea, QTableWidget,
     QTableWidgetItem, QHeaderView, QProgressBar, QDateEdit, QCalendarWidget,
-    QWidgetAction, QSizePolicy,
+    QWidgetAction, QSizePolicy, QGridLayout,
 )
 
 from docx import Document
@@ -89,6 +89,8 @@ SERVICE_MONTHS_GENITIVE = (
     "июля", "августа", "сентября", "октября", "ноября", "декабря",
 )
 SERVICE_PERIOD_BLANK = "_______часов «__»____202__года"
+FORM_FIELD_HEIGHT = 42
+FORM_ARROW_WIDTH = 42
 
 # COLLEAGUE EDIT POINT: names in the source equipment table are not always the
 # same as the values shown in the application's "Тип оборудования" list.
@@ -1097,6 +1099,7 @@ class SearchCombo(QComboBox):
         self.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
         self.setMinimumContentsLength(1)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.setFixedHeight(FORM_FIELD_HEIGHT)
 
         self._editor_title = editor_title
         self._editor_file = editor_file
@@ -1213,6 +1216,7 @@ class SerialCombo(QComboBox):
         self.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
         self.setMinimumContentsLength(1)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.setFixedHeight(FORM_FIELD_HEIGHT)
         self.set_items(items, current_text="")
 
         completer = self.completer()
@@ -1258,7 +1262,7 @@ class QuantitySpinBox(QWidget):
         """Initialize the QuantitySpinBox and its runtime state."""
         super().__init__(parent)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.setFixedHeight(42)
+        self.setFixedHeight(FORM_FIELD_HEIGHT)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -1278,7 +1282,7 @@ class QuantitySpinBox(QWidget):
 
         step_column = QWidget(self.container)
         self.step_column = step_column
-        step_column.setFixedWidth(30)
+        step_column.setFixedWidth(FORM_ARROW_WIDTH)
         step_layout = QVBoxLayout(step_column)
         step_layout.setContentsMargins(0, 0, 0, 0)
         step_layout.setSpacing(0)
@@ -1400,7 +1404,7 @@ class EditableTimeEdit(QWidget):
         """Initialize the EditableTimeEdit and its runtime state."""
         super().__init__(parent)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.setFixedHeight(42)
+        self.setFixedHeight(FORM_FIELD_HEIGHT)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
@@ -1425,7 +1429,7 @@ class EditableTimeEdit(QWidget):
         self.picker_button.setObjectName("TimePickerButton")
         self.picker_button.setIcon(icon_or_empty(ICON_ARROW_DOWN))
         self.picker_button.setIconSize(QSize(18, 18))
-        self.picker_button.setFixedWidth(30)
+        self.picker_button.setFixedWidth(FORM_ARROW_WIDTH)
         self.picker_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
         self.picker_button.setToolTip("Выбрать время")
         self.picker_button.clicked.connect(self.show_time_picker)
@@ -1546,7 +1550,7 @@ class EditableDateEdit(QWidget):
         """Initialize the EditableDateEdit and its runtime state."""
         super().__init__(parent)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.setFixedHeight(42)
+        self.setFixedHeight(FORM_FIELD_HEIGHT)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
@@ -1570,7 +1574,7 @@ class EditableDateEdit(QWidget):
         self.calendar_button.setObjectName("DatePickerButton")
         self.calendar_button.setIcon(icon_or_empty(ICON_ARROW_DOWN))
         self.calendar_button.setIconSize(QSize(18, 18))
-        self.calendar_button.setFixedWidth(30)
+        self.calendar_button.setFixedWidth(FORM_ARROW_WIDTH)
         self.calendar_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
         self.calendar_button.setToolTip("Открыть календарь")
         self.calendar_button.clicked.connect(self.show_calendar)
@@ -1836,6 +1840,11 @@ class MainWindow(QMainWindow):
                 known_models.add(model.casefold())
 
         self._menus_for_mask = set()
+        self._toast = None
+        self._excluded_executor_entered = False
+        self.last_created_act_path = ""
+        self.form_field_boxes = {}
+        self.form_error_labels = {}
 
         self._build_ui()
         self.apply_theme(True)
@@ -2111,17 +2120,11 @@ class MainWindow(QMainWindow):
 
         # --- File menu
         self.menu_file = QMenu(self)
+        self.menu_file.addSection("Программа")
         self.act_check_updates = QAction("Проверить обновления", self)
         self.act_check_updates.triggered.connect(self.check_for_updates)
         self.menu_file.addAction(self.act_check_updates)
-        self.act_update_equipment_registry = QAction(
-            "Обновить станции и оборудование из таблиц", self
-        )
-        self.act_update_equipment_registry.triggered.connect(
-            self.update_equipment_registry_from_tables
-        )
-        self.menu_file.addAction(self.act_update_equipment_registry)
-        self.menu_file.addSeparator()
+        self.menu_file.addSection("Режимы")
 
         self.act_batch_panel = QAction("Панель массового создания актов", self)
         self.act_batch_panel.setCheckable(True)
@@ -2147,7 +2150,15 @@ class MainWindow(QMainWindow):
         self.menu_file.addAction(self.act_preview_enabled)
         self.menu_file.addAction(self.act_batch_panel)
         self.menu_file.addAction(self.act_history_panel)
-        self.menu_file.addSeparator()
+        self.menu_file.addSection("Excel и справочники")
+
+        self.act_update_equipment_registry = QAction(
+            "Обновить станции и оборудование из таблиц", self
+        )
+        self.act_update_equipment_registry.triggered.connect(
+            self.update_equipment_registry_from_tables
+        )
+        self.menu_file.addAction(self.act_update_equipment_registry)
 
         self.act_select_excel = QAction("Выбрать другую Excel-таблицу…", self)
         self.act_select_excel.triggered.connect(self.choose_excel_workbook)
@@ -2162,7 +2173,7 @@ class MainWindow(QMainWindow):
         self.act_open_excel = QAction("Открыть Excel-таблицу", self)
         self.act_open_excel.triggered.connect(self.open_excel_workbook)
         self.menu_file.addAction(self.act_open_excel)
-        self.menu_file.addSeparator()
+        self.menu_file.addSection("Завершение работы")
 
         act_exit = QAction("Выход", self)
         act_exit.triggered.connect(self.close)
@@ -2240,6 +2251,105 @@ class MainWindow(QMainWindow):
 
         return bar
 
+    def _add_form_field(
+        self, form: QFormLayout, label: QWidget, widget: QWidget, key: str,
+    ) -> QWidget:
+        """Add one uniformly sized field with an inline error label."""
+        box = QWidget()
+        box.setObjectName("FormFieldBox")
+        layout = QVBoxLayout(box)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(3)
+        widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        widget.setMinimumHeight(FORM_FIELD_HEIGHT)
+        widget.setMaximumHeight(FORM_FIELD_HEIGHT)
+        layout.addWidget(widget)
+
+        error_label = QLabel("")
+        error_label.setObjectName("FieldError")
+        error_label.setWordWrap(True)
+        error_label.hide()
+        layout.addWidget(error_label)
+
+        self.form_field_boxes[key] = box
+        self.form_error_labels[key] = error_label
+        form.addRow(label, box)
+        return box
+
+    def clear_field_errors(self):
+        """Hide all field-level validation messages."""
+        for label in self.form_error_labels.values():
+            label.clear()
+            label.hide()
+
+    def show_field_error(self, key: str, message: str):
+        """Show a validation message directly below its related form field."""
+        label = self.form_error_labels.get(key)
+        if label is None:
+            self.lbl_status.setText(message)
+            return
+        label.setText(message)
+        label.show()
+
+    def show_toast(
+        self, message: str, *, tone: str = "success", duration: int = 4500,
+        action_text: str = "", action=None,
+    ):
+        """Show a compact temporary notification in the lower-right corner."""
+        if self._toast is not None:
+            self._toast.deleteLater()
+
+        toast = QFrame(self.centralWidget())
+        toast.setObjectName("ToastNotification")
+        toast.setProperty("tone", tone)
+        layout = QHBoxLayout(toast)
+        layout.setContentsMargins(14, 10, 10, 10)
+        layout.setSpacing(10)
+        text = QLabel(message, toast)
+        text.setObjectName("ToastText")
+        text.setWordWrap(True)
+        text.setMaximumWidth(390)
+        layout.addWidget(text, 1)
+        if action_text and action is not None:
+            button = QToolButton(toast)
+            button.setObjectName("ToastAction")
+            button.setText(action_text)
+            button.clicked.connect(action)
+            button.clicked.connect(toast.deleteLater)
+            layout.addWidget(button)
+
+        toast.adjustSize()
+        toast.setMaximumWidth(min(520, max(280, self.centralWidget().width() - 36)))
+        toast.adjustSize()
+        self._toast = toast
+        self._position_toast()
+        toast.show()
+        toast.raise_()
+        QTimer.singleShot(duration, lambda current=toast: self._dismiss_toast(current))
+
+    def _position_toast(self):
+        """Keep the active notification anchored to the lower-right corner."""
+        toast = self._toast
+        host = self.centralWidget()
+        if toast is None or host is None:
+            return
+        margin = 18
+        toast.move(
+            max(margin, host.width() - toast.width() - margin),
+            max(margin, host.height() - toast.height() - margin),
+        )
+
+    def _dismiss_toast(self, toast: QFrame):
+        """Close only the notification that still belongs to this timer."""
+        if self._toast is toast:
+            self._toast = None
+        toast.deleteLater()
+
+    def resizeEvent(self, event):
+        """Reposition overlays when the main window size changes."""
+        super().resizeEvent(event)
+        self._position_toast()
+
     def _build_ui(self):
         """Build ui for this workflow."""
         central = QWidget()
@@ -2288,13 +2398,21 @@ class MainWindow(QMainWindow):
 
         self.ed_date = EditableDateEdit()
         # COLLEAGUE EDIT POINT: form field labels, icons and ordering start here.
-        form.addRow(make_form_label("Дата:", ICON_CALENDAR), self.ed_date)
+        self._add_form_field(
+            form, make_form_label("Дата:", ICON_CALENDAR), self.ed_date, "date"
+        )
 
         self.cb_executor = SearchCombo(self.data_lists["executors"], "Исполнители", FILES["executors"])
-        form.addRow(make_form_label("Исполнитель:", ICON_USER), self.cb_executor)
+        self._add_form_field(
+            form, make_form_label("Исполнитель:", ICON_USER),
+            self.cb_executor, "executor",
+        )
 
         self.cb_location = SearchCombo(self.data_lists["locations"], "Станции", FILES["locations"])
-        form.addRow(make_form_label("Станция:", ICON_STATION), self.cb_location)
+        self._add_form_field(
+            form, make_form_label("Станция:", ICON_STATION),
+            self.cb_location, "location",
+        )
 
         self.cb_model = SearchCombo(self.data_lists["models"], "Типы оборудования", FILES["models"])
         self.cb_model.lineEdit().textChanged.connect(lambda _: self.update_template_hint())
@@ -2303,7 +2421,10 @@ class MainWindow(QMainWindow):
                 self.cb_location.text()
             )
         )
-        form.addRow(make_form_label("Тип оборудования:", ICON_EQUIPMENT), self.cb_model)
+        self._add_form_field(
+            form, make_form_label("Тип оборудования:", ICON_EQUIPMENT),
+            self.cb_model, "model",
+        )
 
         self.ed_serial = SerialCombo([])
         self.ed_serial.setPlaceholderText("№ ККТ")
@@ -2324,29 +2445,48 @@ class MainWindow(QMainWindow):
             self.refresh_serials_for_station
         )
         self.refresh_serials_for_station(self.cb_location.text())
-        form.addRow(make_form_label("№ ККТ:", ICON_SERIAL), self.ed_serial)
+        self._add_form_field(
+            form, make_form_label("№ ККТ:", ICON_SERIAL),
+            self.ed_serial, "serial",
+        )
 
         self.cb_work = SearchCombo(self.data_lists["work"], "Выполненные работы", FILES["work"])
-        form.addRow(make_form_label("Выполненные работы:", ICON_SERVICES), self.cb_work)
+        self._add_form_field(
+            form, make_form_label("Выполненные работы:", ICON_SERVICES),
+            self.cb_work, "work",
+        )
 
         self.cb_issues = SearchCombo(self.data_lists["issues"], "Несоответствие", FILES["issues"])
-        form.addRow(make_form_label("Несоответствие:", ICON_ISSUES), self.cb_issues)
+        self._add_form_field(
+            form, make_form_label("Несоответствие:", ICON_ISSUES),
+            self.cb_issues, "issues",
+        )
 
         self.cb_done_work = SearchCombo(self.data_lists["done_work"], "Проделанная работа", FILES["done_work"])
-        form.addRow(make_form_label("Проделанная работа:", ICON_DONE_WORK), self.cb_done_work)
+        self._add_form_field(
+            form, make_form_label("Проделанная работа:", ICON_DONE_WORK),
+            self.cb_done_work, "done_work",
+        )
 
         self.cb_materials = SearchCombo(self.data_lists["materials"], "Расходные материалы", FILES["materials"])
-        form.addRow(make_form_label("Расходные материалы:", ICON_MATERIALS), self.cb_materials)
+        self._add_form_field(
+            form, make_form_label("Расходные материалы:", ICON_MATERIALS),
+            self.cb_materials, "materials",
+        )
 
         self.sp_qty = QuantitySpinBox()
         self.sp_qty.setRange(0, 999999)
         self.sp_qty.setValue(0)
-        form.addRow(make_form_label("Количество (цифрами):", ICON_QTY), self.sp_qty)
+        self._add_form_field(
+            form, make_form_label("Количество (цифрами):", ICON_QTY),
+            self.sp_qty, "qty",
+        )
 
         self.cb_template = QComboBox()
         self.cb_template.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
         self.cb_template.setMinimumContentsLength(1)
         self.cb_template.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.cb_template.setFixedHeight(FORM_FIELD_HEIGHT)
         self.cb_template.addItem("Авто", None)
         self.cb_template.addItem(
             f"АБП / МКТФ ({os.path.basename(TEMPLATE_TYPE1)})",
@@ -2357,7 +2497,10 @@ class MainWindow(QMainWindow):
             TEMPLATE_TYPE2,
         )
         self.cb_template.currentIndexChanged.connect(lambda _: self.update_template_hint())
-        form.addRow(make_form_label("Выбор шаблона:", ICON_DOCX), self.cb_template)
+        self._add_form_field(
+            form, make_form_label("Выбор шаблона:", ICON_DOCX),
+            self.cb_template, "template",
+        )
 
         # MID/Validator-only fields are intentionally the last row of the form.
         self.service_period_widget = QWidget()
@@ -2378,16 +2521,20 @@ class MainWindow(QMainWindow):
         service_period_layout.addWidget(service_period_separator)
         service_period_layout.addWidget(self.ed_service_to, 1)
         self.service_period_label = make_form_label("Период услуги:", ICON_CALENDAR)
-        form.addRow(self.service_period_label, self.service_period_widget)
+        self._add_form_field(
+            form, self.service_period_label, self.service_period_widget,
+            "service_period",
+        )
         self.update_template_hint()
 
         action_bar = QFrame()
         # COLLEAGUE EDIT POINT: fixed bottom action layout and button ordering.
         action_bar.setObjectName("ActionBar")
         self.action_bar = action_bar
-        action_layout = QHBoxLayout(action_bar)
+        action_layout = QGridLayout(action_bar)
         action_layout.setContentsMargins(10, 8, 10, 8)
-        action_layout.setSpacing(10)
+        action_layout.setHorizontalSpacing(12)
+        action_layout.setVerticalSpacing(0)
         self.btn_clear = QPushButton("Очистить")
         self.btn_clear.setProperty("secondary", True)
         self.btn_clear.setMinimumHeight(38)
@@ -2400,11 +2547,16 @@ class MainWindow(QMainWindow):
         self.btn_open_output.setProperty("secondary", True)
         self.btn_open_output.setMinimumHeight(38)
         self.btn_open_output.clicked.connect(lambda: open_folder(OUTPUT_DIR))
-        self.btn_surname_act = QPushButton("Акт по фамилии")
+        self.btn_surname_act = QToolButton()
+        self.btn_surname_act.setObjectName("SurnameActButton")
+        self.btn_surname_act.setText("Акт по фамилии")
         self.btn_surname_act.setProperty("secondary", True)
-        self.btn_surname_act.setMinimumHeight(38)
+        self.btn_surname_act.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        self.btn_surname_act.setPopupMode(QToolButton.MenuButtonPopup)
+        self.btn_surname_act.setFixedHeight(FORM_FIELD_HEIGHT)
+        self.btn_surname_act.setMinimumWidth(174)
         self.btn_surname_act.setToolTip(
-            "Создать чистый акт, заполнив только фамилию исполнителя"
+            "Нажатие создаёт акт по выбранному шаблону; стрелка открывает выбор"
         )
         surname_menu = QMenu(self.btn_surname_act)
         surname_type1 = surname_menu.addAction("АБП / МКТФ")
@@ -2416,6 +2568,11 @@ class MainWindow(QMainWindow):
             lambda: self.create_surname_only_act(TEMPLATE_TYPE2)
         )
         self.btn_surname_act.setMenu(surname_menu)
+        self.btn_surname_act.clicked.connect(
+            lambda: self.create_surname_only_act(
+                self.selected_template(self.cb_model.text())
+            )
+        )
         for button in (
             self.btn_clear, self.btn_batch_add, self.btn_open_output,
             self.btn_surname_act,
@@ -2424,22 +2581,57 @@ class MainWindow(QMainWindow):
 
         self.btn_create = QPushButton("Создать акт")
         self.btn_create.setProperty("primaryAction", True)
-        self.btn_create.setMinimumSize(300, 46)
-        self.btn_create.setMaximumWidth(380)
+        self.btn_create.setMinimumSize(250, 46)
+        self.btn_create.setMaximumWidth(330)
         create_shadow = QGraphicsDropShadowEffect(self.btn_create)
         create_shadow.setBlurRadius(24)
         create_shadow.setOffset(0, 6)
         create_shadow.setColor(QColor(37, 99, 235, 105))
         self.btn_create.setGraphicsEffect(create_shadow)
         self.btn_create.clicked.connect(self.create_act)
-        action_layout.addWidget(self.btn_clear)
-        action_layout.addStretch(1)
-        action_layout.addWidget(self.btn_surname_act)
-        action_layout.addWidget(self.btn_create, 0, Qt.AlignHCenter)
-        action_layout.addStretch(1)
-        action_layout.addWidget(self.btn_batch_add)
-        action_layout.addWidget(self.btn_open_output)
+
+        self.btn_open_last = QPushButton("Открыть акт")
+        self.btn_open_last.setObjectName("OpenLastActButton")
+        self.btn_open_last.setProperty("secondary", True)
+        self.btn_open_last.setFixedHeight(46)
+        self.btn_open_last.setMinimumWidth(132)
+        self.btn_open_last.setToolTip("Открыть последний созданный акт DOCX")
+        self.btn_open_last.clicked.connect(self.open_last_created_act)
+        self.btn_open_last.setEnabled(False)
+
+        left_actions = QWidget(action_bar)
+        left_actions.setMinimumWidth(290)
+        left_layout_actions = QHBoxLayout(left_actions)
+        left_layout_actions.setContentsMargins(0, 0, 0, 0)
+        left_layout_actions.setSpacing(8)
+        left_layout_actions.addWidget(self.btn_clear)
+        left_layout_actions.addWidget(self.btn_surname_act)
+
+        center_actions = QWidget(action_bar)
+        center_actions.setObjectName("CenterActActions")
+        center_layout_actions = QHBoxLayout(center_actions)
+        center_layout_actions.setContentsMargins(0, 0, 0, 0)
+        center_layout_actions.setSpacing(8)
+        center_layout_actions.addWidget(self.btn_create)
+        center_layout_actions.addWidget(self.btn_open_last)
+
+        right_actions = QWidget(action_bar)
+        right_actions.setMinimumWidth(290)
+        right_layout_actions = QHBoxLayout(right_actions)
+        right_layout_actions.setContentsMargins(0, 0, 0, 0)
+        right_layout_actions.setSpacing(8)
+        right_layout_actions.addWidget(self.btn_batch_add)
+        right_layout_actions.addWidget(self.btn_open_output)
+
+        action_layout.addWidget(left_actions, 0, 0, Qt.AlignLeft)
+        action_layout.addWidget(center_actions, 0, 1, Qt.AlignCenter)
+        action_layout.addWidget(right_actions, 0, 2, Qt.AlignRight)
+        action_layout.setColumnStretch(0, 1)
+        action_layout.setColumnStretch(1, 0)
+        action_layout.setColumnStretch(2, 1)
         left_layout.addWidget(action_bar)
+
+        self.remember_created_act(self.find_latest_created_act())
 
         self.lbl_status = QLabel("")
         self.lbl_status.setObjectName("StatusLabel")
@@ -2722,6 +2914,11 @@ class MainWindow(QMainWindow):
                 padding: 0 4px;
                 min-height: 18px;
             }}
+            #FieldError {{
+                color: #ef6464;
+                font-size: 11px;
+                padding: 0 4px 1px 4px;
+            }}
             QScrollArea {{ background: transparent; }}
             QScrollArea > QWidget > QWidget {{ background: transparent; }}
 
@@ -2761,10 +2958,11 @@ class MainWindow(QMainWindow):
             {self._menu_css()}
 
             QComboBox {{
-                padding: 5px 34px 5px 12px;
+                padding: 5px 46px 5px 12px;
                 border-radius: 11px;
                 border: 1px solid {border};
                 min-height: 30px;
+                max-height: 30px;
                 background: {bg};
             }}
             QComboBox:hover, QLineEdit:hover, QSpinBox:hover, QDateEdit:hover {{
@@ -2773,7 +2971,7 @@ class MainWindow(QMainWindow):
             QComboBox::drop-down {{
                 subcontrol-origin: padding;
                 subcontrol-position: top right;
-                width: 30px;
+                width: {FORM_ARROW_WIDTH}px;
                 border-left: 1px solid {dd_border};
             }}
             {down_arrow_rule}
@@ -2789,6 +2987,7 @@ class MainWindow(QMainWindow):
                 border-radius: 11px;
                 border: 1px solid {border};
                 min-height: 30px;
+                max-height: 30px;
                 background: {bg};
             }}
             QLineEdit:focus, QSpinBox:focus, QDateEdit:focus, QComboBox:focus {{
@@ -2917,6 +3116,49 @@ class MainWindow(QMainWindow):
                 background: rgba(59, 130, 246, 35);
             }}
 
+            #SurnameActButton {{
+                background: {btn_bg};
+                color: {popup_fg};
+                border: 1px solid {tb_border};
+                border-radius: 11px;
+                padding: 0 48px 0 14px;
+                font-weight: 700;
+            }}
+            #SurnameActButton:hover {{ background: {btn_hover}; }}
+            #SurnameActButton:pressed {{ background: {btn_press}; }}
+            #SurnameActButton::menu-button {{
+                subcontrol-origin: padding;
+                subcontrol-position: top right;
+                width: {FORM_ARROW_WIDTH}px;
+                border-left: 1px solid {dd_border};
+                border-top-right-radius: 10px;
+                border-bottom-right-radius: 10px;
+            }}
+            #SurnameActButton::menu-arrow {{
+                image: url("{arrow_png_qss}");
+                width: 18px;
+                height: 18px;
+                subcontrol-position: center;
+                subcontrol-origin: content;
+            }}
+
+            #ToastNotification {{
+                background: {popup_bg};
+                border: 1px solid {border};
+                border-left: 4px solid #3b82f6;
+                border-radius: 12px;
+            }}
+            #ToastNotification[tone="success"] {{ border-left-color: #34b27b; }}
+            #ToastNotification[tone="warning"] {{ border-left-color: #e0a928; }}
+            #ToastNotification[tone="error"] {{ border-left-color: #ef6464; }}
+            #ToastText {{ color: {popup_fg}; }}
+            #ToastAction {{
+                color: #65aefb;
+                background: transparent;
+                border: none;
+                padding: 5px 7px;
+            }}
+
             QPushButton {{
                 background: #3b82f6;
                 color: #ffffff;
@@ -2953,6 +3195,26 @@ class MainWindow(QMainWindow):
                 border: 1px solid {tb_border};
             }}
             QPushButton[secondary="true"]:hover {{ background: {btn_hover}; }}
+            #OpenLastActButton {{
+                background: rgba(59, 130, 246, 12);
+                color: #65aefb;
+                border: 1px solid rgba(59, 130, 246, 145);
+                border-radius: 12px;
+                padding: 0 16px;
+                font-weight: 700;
+            }}
+            #OpenLastActButton:hover {{
+                background: rgba(59, 130, 246, 32);
+                border-color: #65aefb;
+            }}
+            #OpenLastActButton:pressed {{
+                background: rgba(59, 130, 246, 48);
+            }}
+            #OpenLastActButton:disabled {{
+                color: #607086;
+                border-color: {border};
+                background: transparent;
+            }}
             QPushButton[dangerSecondary="true"] {{
                 background: {btn_bg};
                 color: #ef6464;
@@ -3128,9 +3390,6 @@ class MainWindow(QMainWindow):
             del model_blocker
         self.refresh_serials_for_station(station)
         self.update_template_hint()
-        self.lbl_status.setText(
-            f"По № {record['serial']} определено: {model}, {station}."
-        )
         return True
 
     def pick_template_for_equipment_type(self, equipment_type: str) -> str:
@@ -3168,6 +3427,7 @@ class MainWindow(QMainWindow):
             visible = is_validator_template(tpl)
             self.service_period_label.setVisible(visible)
             self.service_period_widget.setVisible(visible)
+            self.form_field_boxes["service_period"].setVisible(visible)
 
     def set_batch_panel_visible(self, visible: bool):
         """Set batch panel visible for this workflow."""
@@ -3357,8 +3617,44 @@ class MainWindow(QMainWindow):
             f"Акт перемещён в Корзину: {os.path.basename(document_path)}"
         )
 
+    def find_latest_created_act(self) -> str:
+        """Return the newest existing DOCX from the portable Acts folder."""
+        try:
+            candidates = [
+                os.path.join(OUTPUT_DIR, name)
+                for name in os.listdir(OUTPUT_DIR)
+                if name.casefold().endswith(".docx")
+                and os.path.isfile(os.path.join(OUTPUT_DIR, name))
+            ]
+            return max(candidates, key=os.path.getmtime) if candidates else ""
+        except OSError:
+            return ""
+
+    def remember_created_act(self, path: str):
+        """Remember a generated document and update the centered open button."""
+        path = os.path.abspath(str(path or "")) if path else ""
+        exists = bool(path and os.path.isfile(path))
+        self.last_created_act_path = path if exists else ""
+        button = getattr(self, "btn_open_last", None)
+        if button is not None:
+            button.setEnabled(exists)
+
+    def open_last_created_act(self):
+        """Open the last generated act, recovering gracefully if it was deleted."""
+        path = self.last_created_act_path
+        if not path or not os.path.isfile(path):
+            path = self.find_latest_created_act()
+            self.remember_created_act(path)
+        if not path:
+            self.show_toast(
+                "Созданные акты не найдены.", tone="warning", duration=3200
+            )
+            return
+        open_file(path)
+
     def clear_form(self):
         """Clear form for this workflow."""
+        self.clear_field_errors()
         self.ed_date.setDate(QDate.currentDate())
         self.ed_service_from.clear()
         self.ed_service_to.clear()
@@ -3370,17 +3666,18 @@ class MainWindow(QMainWindow):
         self.ed_serial.clear()
         self.sp_qty.setValue(0)
         self.cb_template.setCurrentIndex(0)
-        self.lbl_status.setText("Форма очищена.")
+        self.lbl_status.clear()
+        self.show_toast("Форма очищена.", tone="info", duration=2500)
 
     def current_act_data(self) -> Dict[str, object]:
         """Return act data for this workflow."""
         self.apply_equipment_for_serial()
         model = self.cb_model.text()
         executor = self.cb_executor.text()
-        if is_excluded_executor(executor):
+        self._excluded_executor_entered = is_excluded_executor(executor)
+        if self._excluded_executor_entered:
             executor = ""
             self.cb_executor.setEditText("")
-            self.lbl_status.setText("Исполнитель исключён из списка.")
         return {
             "date": (self.ed_date.text() or "").strip(),
             "service_from": normalize_service_time_input(
@@ -3400,6 +3697,38 @@ class MainWindow(QMainWindow):
             "qty": int(self.sp_qty.value()),
             "template": self.selected_template(model),
         }
+
+    def validate_act_data_for_form(self, data: Dict[str, object]) -> bool:
+        """Validate document inputs and attach messages to related fields."""
+        self.clear_field_errors()
+        valid = True
+        if self._excluded_executor_entered or is_excluded_executor(
+            str(data.get("executor", ""))
+        ):
+            self.show_field_error(
+                "executor", "Этот исполнитель исключён из рабочих списков."
+            )
+            valid = False
+        template = str(data.get("template", ""))
+        if not os.path.isfile(template):
+            self.show_field_error(
+                "template",
+                "Шаблон не найден. Проверьте папку Data\\Templates.",
+            )
+            valid = False
+
+        if is_validator_template(template):
+            try:
+                validate_service_period(
+                    str(data.get("service_from", "")),
+                    str(data.get("service_to", "")),
+                    str(data.get("date", "")),
+                )
+            except ValueError as error:
+                key = "date" if "дат" in str(error).casefold() else "service_period"
+                self.show_field_error(key, str(error))
+                valid = False
+        return valid
 
     @staticmethod
     def batch_act_caption(data: Dict[str, object]) -> str:
@@ -3477,22 +3806,19 @@ class MainWindow(QMainWindow):
     def add_current_act_to_batch(self):
         """Add current act to batch for this workflow."""
         data = self.current_act_data()
-        template = str(data["template"])
-        if not os.path.isfile(template):
-            QMessageBox.critical(
-                self,
-                "Нет шаблона",
-                f"Не найден шаблон:\n{template}\n\nПоложи его в папку Data\\Templates.",
-            )
+        if not self.validate_act_data_for_form(data):
             return
         if self.batch_edit_row is not None and self.batch_edit_row < self.batch_table.rowCount():
             self.set_batch_row(self.batch_edit_row, data)
             self.cancel_batch_edit()
+            message = "Изменения в очереди сохранены."
         else:
             row = self.batch_table.rowCount()
             self.batch_table.insertRow(row)
             self.set_batch_row(row, data)
+            message = "Акт добавлен в очередь."
         self.update_batch_count()
+        self.show_toast(message, tone="success", duration=2600)
 
     def selected_batch_rows(self) -> list[int]:
         """Return batch rows for this workflow."""
@@ -3621,6 +3947,8 @@ class MainWindow(QMainWindow):
         else:
             doc.save(out_path)
 
+        self.remember_created_act(out_path)
+
         history_error = ""
         try:
             save_history_record(HISTORY_DIR, APP_DIR, out_path, data)
@@ -3666,12 +3994,16 @@ class MainWindow(QMainWindow):
 
     def create_surname_only_act(self, template: str):
         """Create a blank template with only the executor name and initials."""
+        self.clear_field_errors()
         executor_name = executor_name_with_initials(self.cb_executor.text())
         if not executor_name:
-            QMessageBox.warning(
-                self,
-                "Не указана фамилия",
-                "Выберите исполнителя или введите фамилию буквами.",
+            self.show_field_error(
+                "executor", "Выберите исполнителя или введите фамилию буквами."
+            )
+            return
+        if not os.path.isfile(template):
+            self.show_field_error(
+                "template", "Шаблон не найден. Проверьте папку Data\\Templates."
             )
             return
 
@@ -3707,17 +4039,14 @@ class MainWindow(QMainWindow):
                 f"✅ Чистый акт создан: {result['out_path']}\n"
                 f"{result['excel_status']}"
             )
-            msg = QMessageBox(self)
-            msg.setWindowTitle("Готово")
-            msg.setText(f"Создан акт по фамилии: {executor_name}.")
-            msg.setInformativeText(result["out_path"])
-            btn_open = msg.addButton("Открыть", QMessageBox.AcceptRole)
-            msg.addButton("OK", QMessageBox.RejectRole)
-            msg.exec()
-            if msg.clickedButton() == btn_open:
-                open_file(result["out_path"])
+            self.show_toast(
+                f"Акт по фамилии создан: {executor_name}.",
+                tone="success",
+                action_text="Открыть",
+                action=lambda _checked=False, path=result["out_path"]: open_file(path),
+            )
         except Exception as error:
-            QMessageBox.critical(self, "Ошибка", str(error))
+            self.lbl_status.setText(f"Не удалось создать акт: {error}")
 
     def create_batch_acts(self):
         """Generate every queued act without opening individual previews."""
@@ -3779,27 +4108,32 @@ class MainWindow(QMainWindow):
             f"✅ Массовое создание завершено: создано {created}, "
             f"ошибок {len(failures)}. В очереди: {self.batch_table.rowCount()}."
         )
-        details = []
-        if failures:
-            details.append("Ошибки:\n" + "\n".join(failures[:10]))
-        if excel_warnings:
-            details.append("Excel:\n" + "\n".join(excel_warnings[:10]))
-        if history_warnings:
-            details.append("История:\n" + "\n".join(history_warnings[:10]))
         if self.act_history_panel.isChecked():
             self.refresh_history()
-        QMessageBox.information(
-            self,
-            "Массовое создание завершено",
-            f"Создано актов: {created}.\nОшибок: {len(failures)}."
-            + ("\n\n" + "\n\n".join(details) if details else ""),
+        notices = []
+        if failures:
+            notices.append(f"ошибок: {len(failures)}")
+        if excel_warnings:
+            notices.append(f"предупреждений Excel: {len(excel_warnings)}")
+        if history_warnings:
+            notices.append(f"предупреждений истории: {len(history_warnings)}")
+        summary = f"Массовое создание завершено: создано {created}"
+        if notices:
+            summary += "; " + ", ".join(notices)
+        self.show_toast(
+            summary + ".",
+            tone="warning" if notices else "success",
+            duration=6500 if notices else 4200,
         )
 
     def create_act(self):
         """Validate the form, optionally preview the act, and save the confirmed document."""
+        data = self.current_act_data()
+        if not self.validate_act_data_for_form(data):
+            return
         try:
             result = self.generate_act_document(
-                self.current_act_data(),
+                data,
                 preview=self.app_settings.get("preview_before_save", False),
             )
             if result is None:
@@ -3810,36 +4144,35 @@ class MainWindow(QMainWindow):
 
             out_path = result["out_path"]
             excel_status = result["excel_status"]
+            warnings = []
             if result["excel_error"]:
-                QMessageBox.warning(
-                    self,
-                    "Акт сохранён, Excel не обновлён",
-                    f"DOCX создан:\n{out_path}\n\n{result['excel_error']}",
-                )
+                warnings.append(f"Excel не обновлён: {result['excel_error']}")
 
             if result["history_error"]:
-                QMessageBox.warning(
-                    self,
-                    "Акт сохранён, история не обновлена",
-                    f"DOCX создан:\n{out_path}\n\n{result['history_error']}",
-                )
+                warnings.append(f"История не обновлена: {result['history_error']}")
             if self.act_history_panel.isChecked():
                 self.refresh_history()
 
             self.lbl_status.setText(f"✅ Файл создан: {out_path}\n{excel_status}")
-            msg = QMessageBox(self)
-            msg.setWindowTitle("Готово")
-            msg.setText("Акт создан.")
-            msg.setInformativeText(f"{out_path}\n\n{excel_status}")
-            btn_open = msg.addButton("Открыть", QMessageBox.AcceptRole)
-            msg.addButton("OK", QMessageBox.RejectRole)
-            msg.exec()
-            if msg.clickedButton() == btn_open:
-                open_file(out_path)
-        except Exception as error:
-            QMessageBox.critical(
-                self, "Ошибка", f"Не удалось создать акт:\n{error}"
+            toast_text = "Акт создан."
+            if warnings:
+                toast_text += " " + " ".join(warnings)
+            self.show_toast(
+                toast_text,
+                tone="warning" if warnings else "success",
+                duration=6500 if warnings else 4500,
+                action_text="Открыть",
+                action=lambda _checked=False, path=out_path: open_file(path),
             )
+        except ValueError as error:
+            key = "date" if "дат" in str(error).casefold() else "service_period"
+            self.show_field_error(key, str(error))
+        except FileNotFoundError:
+            self.show_field_error(
+                "template", "Шаблон не найден. Проверьте папку Data\\Templates."
+            )
+        except Exception as error:
+            self.lbl_status.setText(f"Не удалось создать акт: {error}")
 
 
 def main():
