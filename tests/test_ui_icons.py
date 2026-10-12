@@ -2,21 +2,28 @@ import unittest
 from pathlib import Path
 
 from app_paths import (
-    ICON_APP, ICON_BRAND, ICON_MODES, ICON_CALENDAR, ICON_DOCX,
+    ICON_APP, ICON_ARROW_DOWN, ICON_BRAND, ICON_MODES, ICON_CALENDAR, ICON_DOCX,
     ICON_DONE_WORK, ICON_EQUIPMENT,
-    ICON_EXCEL, ICON_ISSUES, ICON_LISTS, ICON_MATERIALS, ICON_QTY,
+    ICON_EXCEL, ICON_FOLDER, ICON_ISSUES, ICON_LISTS, ICON_MATERIALS, ICON_QTY,
+    ICON_REFRESH, ICON_SETTINGS,
     ICON_SERIAL, ICON_SERVICES, ICON_STATION, ICON_USER, ICON_XLS,
 )
 
 
 class UiIconTests(unittest.TestCase):
-    def test_original_user_icon_set_is_present(self):
-        for icon_path in (
+    def test_android_style_interface_icon_set_is_present(self):
+        interface_icons = (
+            ICON_ARROW_DOWN, ICON_FOLDER, ICON_REFRESH, ICON_SETTINGS,
             ICON_CALENDAR, ICON_DOCX, ICON_DONE_WORK, ICON_EQUIPMENT,
             ICON_EXCEL, ICON_ISSUES, ICON_LISTS, ICON_MATERIALS, ICON_QTY,
             ICON_SERIAL, ICON_SERVICES, ICON_STATION, ICON_USER, ICON_XLS,
-            ICON_BRAND, ICON_MODES,
-        ):
+        )
+        for icon_path in interface_icons:
+            icon = Path(icon_path)
+            self.assertTrue(icon.is_file(), icon.name)
+            self.assertEqual(".svg", icon.suffix.lower())
+
+        for icon_path in (ICON_BRAND, ICON_MODES):
             icon = Path(icon_path)
             self.assertTrue(icon.is_file(), icon.name)
             self.assertEqual(".png", icon.suffix.lower())

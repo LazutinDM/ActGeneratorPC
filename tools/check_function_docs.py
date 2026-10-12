@@ -22,6 +22,11 @@ TARGETS = (
     "excel_export.py",
     "history_store.py",
     "update_manager.py",
+    "runtime_dll_search.py",
+    "tools/extract_app_brand.py",
+    "tools/extract_google_registry.py",
+    "tools/generate_icon_proposals_v2.py",
+    "tools/generate_user_style_icons.py",
 )
 
 # COLLEAGUE EDIT POINT: use explicit wording for business-critical functions.

@@ -12,11 +12,13 @@ TARGET = ROOT / "Data" / "Icons" / "brand.png"
 
 
 def is_outer_white(pixel: tuple[int, int, int, int]) -> bool:
+    """Return whether a pixel belongs to the removable near-white background."""
     red, green, blue, _alpha = pixel
     return min(red, green, blue) >= 226 and max(red, green, blue) - min(red, green, blue) <= 22
 
 
 def extract() -> Image.Image:
+    """Remove the outer white region and return a centered transparent brand icon."""
     image = Image.open(SOURCE).convert("RGBA")
     width, height = image.size
     pixels = image.load()

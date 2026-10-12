@@ -11,6 +11,7 @@ SCALE = 8
 
 
 def rounded_gradient(size: int, radius: int) -> Image.Image:
+    """Create a supersampled rounded blue gradient canvas with a soft highlight."""
     canvas = size * SCALE
     image = Image.new("RGBA", (canvas, canvas), (0, 0, 0, 0))
     gradient = Image.new("RGBA", image.size)
@@ -38,6 +39,7 @@ def rounded_gradient(size: int, radius: int) -> Image.Image:
 
 
 def make_brand() -> Image.Image:
+    """Render the compact document-and-tools toolbar brand icon."""
     size = 64
     image = rounded_gradient(size, 15)
     draw = ImageDraw.Draw(image)
@@ -59,6 +61,7 @@ def make_brand() -> Image.Image:
 
 
 def make_modes() -> Image.Image:
+    """Render the legacy sliders icon used by the former modes menu."""
     size = 40
     image = rounded_gradient(size, 10)
     draw = ImageDraw.Draw(image)

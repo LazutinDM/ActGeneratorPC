@@ -49,7 +49,7 @@ jobs:
 
       - name: Build portable ZIP
         shell: pwsh
-        run: ./build.ps1
+        run: ./build.ps1 -SingleExeRuntime
 
       - name: Create GitHub Release
         shell: pwsh
@@ -57,6 +57,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "${{ github.ref_name }}" `
-            "dist/ActGeneratorPC-portable.zip#ActGeneratorPC portable for Windows" `
+            "dist/ActGeneratorPC-portable.zip" `
             --verify-tag `
             --notes ""

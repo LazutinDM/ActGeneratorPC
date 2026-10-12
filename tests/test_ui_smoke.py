@@ -9,20 +9,26 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QDate, QRectF, QSize
+from PySide6.QtCore import QDate, QEvent, QPoint, QRectF, QSize, Qt
 from PySide6.QtGui import QPainter, QPdfWriter
-from PySide6.QtWidgets import QApplication, QDialog, QMessageBox, QToolButton
+from PySide6.QtTest import QTest
+from PySide6.QtWidgets import (
+    QApplication, QCalendarWidget, QDialog, QFileDialog, QMessageBox,
+    QLineEdit, QToolButton,
+)
 from docx import Document
 
 from app import (
-    ActPreviewDialog, MainWindow, is_excluded_executor, read_lines, write_lines,
+    ActPreviewDialog, EquipmentDirectoryDialog, MainWindow,
+    RussianTextContextMenuFilter,
+    is_excluded_executor, read_lines, write_lines,
     canonical_equipment_model, executor_name_with_initials,
-    normalize_service_time_input,
+    normalize_service_time_input, preferred_interface_icon_path,
     service_datetime_for_doc,
     validate_service_period,
 )
 from version import __version__
-from app_paths import TEMPLATE_TYPE1, TEMPLATE_TYPE2
+from app_paths import ICON_CALENDAR, TEMPLATE_TYPE1, TEMPLATE_TYPE2
 
 
 class UiSmokeTests(unittest.TestCase):
@@ -36,6 +42,9 @@ class UiSmokeTests(unittest.TestCase):
             self.assertEqual("Генератор актов", window.windowTitle())
             self.assertIsNotNone(window.btn_create)
             self.assertEqual("Открыть акт", window.btn_open_last.text())
+            self.assertFalse(window.post_create_actions.isHidden())
+            self.assertFalse(window.btn_open_output.isHidden())
+            self.assertTrue(window.open_act_overlay.isHidden())
             self.assertIsNotNone(window.cb_executor)
             self.assertIsNotNone(window.cb_location)
             self.assertIsNotNone(window.cb_model)
@@ -43,6 +52,12 @@ class UiSmokeTests(unittest.TestCase):
             self.assertIsNotNone(window.act_use_embedded_excel)
             self.assertIsNotNone(window.act_open_excel)
             self.assertIsNotNone(window.act_update_equipment_registry)
+            self.assertIsNotNone(window.act_export_errors)
+            self.assertIsNotNone(window.act_open_equipment_directory)
+            self.assertIsNotNone(window.btn_reference)
+            self.assertIsNotNone(window.act_theme_dark)
+            self.assertIsNotNone(window.act_theme_light)
+            self.assertIsNotNone(window.act_accent_enabled)
             self.assertTrue(window.act_preview_enabled.isCheckable())
             self.assertTrue(window.act_batch_panel.isCheckable())
             self.assertTrue(window.act_history_panel.isCheckable())
@@ -52,6 +67,9 @@ class UiSmokeTests(unittest.TestCase):
             self.assertIn(window.act_batch_panel, file_actions)
             self.assertIn(window.act_history_panel, file_actions)
             self.assertIn(window.act_update_equipment_registry, file_actions)
+            self.assertIn(window.act_export_errors, file_actions)
+            self.assertEqual(Qt.CustomContextMenu, window.batch_table.contextMenuPolicy())
+            self.assertEqual(Qt.CustomContextMenu, window.history_table.contextMenuPolicy())
             self.assertTrue(window.batch_panel.isHidden())
             self.assertTrue(window.history_panel.isHidden())
             self.assertTrue(window.ed_date.calendarPopup())
@@ -68,6 +86,172 @@ class UiSmokeTests(unittest.TestCase):
                 self.assertEqual(42, field.height())
         finally:
             window.close()
+
+    def test_theme_mode_and_optional_lime_accent_are_applied(self):
+        window = MainWindow()
+        try:
+            with patch("app.save_app_settings") as save_settings:
+                window.set_theme_mode(False)
+                self.assertFalse(window.dark_theme)
+                self.assertTrue(window.act_theme_light.isChecked())
+                window.set_accent_enabled(True)
+                window.set_accent_scheme("lime")
+            self.assertEqual("lime", window.app_settings["accent_scheme"])
+            self.assertTrue(window.app_settings["accent_enabled"])
+            self.assertIn("#b6ee72", window.styleSheet())
+            self.assertGreaterEqual(save_settings.call_count, 3)
+        finally:
+            window.close()
+
+    def test_extended_accent_palette_is_available(self):
+        window = MainWindow()
+        try:
+            expected = {
+                "blue", "lime", "aqua", "violet", "coral", "emerald",
+                "amber", "orange", "rose", "indigo", "silver",
+                "red", "sky", "mint", "gold", "lavender", "fuchsia",
+            }
+            self.assertEqual(expected, set(window.accent_actions))
+            self.assertTrue(all(not action.icon().isNull()
+                                for action in window.accent_actions.values()))
+        finally:
+            window.close()
+
+    def test_legacy_icons_can_be_switched_without_restart(self):
+        window = MainWindow()
+        try:
+            with patch("app.save_app_settings") as save_settings:
+                window.set_legacy_icons(True)
+                self.assertTrue(window.app_settings["legacy_icons"])
+                self.assertTrue(window.act_legacy_icons.isChecked())
+                self.assertTrue(
+                    preferred_interface_icon_path(ICON_CALENDAR).endswith(
+                        "calendar.png"
+                    )
+                )
+                window.set_legacy_icons(False)
+                self.assertFalse(window.app_settings["legacy_icons"])
+                self.assertTrue(
+                    preferred_interface_icon_path(ICON_CALENDAR).endswith(
+                        "calendar.svg"
+                    )
+                )
+            self.assertGreaterEqual(save_settings.call_count, 2)
+        finally:
+            window.close()
+
+    def test_date_picker_uses_modern_themed_calendar(self):
+        window = MainWindow()
+        try:
+            window.ed_date.show_calendar()
+            menu = window.ed_date._calendar_menu
+            calendar = menu.findChild(QCalendarWidget, "ModernCalendar")
+            self.assertIsNotNone(calendar)
+            self.assertTrue(calendar.isGridVisible())
+            self.assertEqual(Qt.Monday, calendar.firstDayOfWeek())
+            menu.close()
+        finally:
+            window.close()
+
+    def test_russian_context_menu_filter_handles_line_edits(self):
+        editor = QLineEdit()
+        event = SimpleNamespace(
+            type=lambda: QEvent.ContextMenu,
+            globalPos=lambda: QPoint(20, 20),
+        )
+        context_filter = RussianTextContextMenuFilter()
+        with patch("app.show_russian_text_context_menu") as show_menu:
+            self.assertTrue(context_filter.eventFilter(editor, event))
+            show_menu.assert_called_once_with(editor, QPoint(20, 20))
+
+    def test_equipment_directory_searches_metadata_and_selects_record(self):
+        records = [
+            {
+                "station": "КРЮКОВО", "model": "МКТФ", "serial": "180300088",
+                "equipmentId": "EQ-778", "stationNumber": "12",
+            },
+            {
+                "station": "ХИМКИ", "model": "АБП-09", "serial": "52840",
+                "equipmentId": "EQ-991", "stationNumber": "4",
+            },
+        ]
+        selected = []
+        dialog = EquipmentDirectoryDialog(records, selected.append)
+        try:
+            available = QApplication.primaryScreen().availableGeometry()
+            self.assertLessEqual(dialog.width(), available.width())
+            self.assertLessEqual(dialog.height(), available.height())
+            self.assertEqual(Qt.ScrollBarAsNeeded,
+                             dialog.table.horizontalScrollBarPolicy())
+            self.assertEqual(Qt.ScrollBarAsNeeded,
+                             dialog.table.verticalScrollBarPolicy())
+            dialog.search.setText("EQ-778")
+            self.assertEqual(1, dialog.table.rowCount())
+            self.assertEqual("180300088", dialog.table.item(0, 2).text())
+            dialog.table.selectRow(0)
+            dialog._select_current()
+            self.assertEqual("КРЮКОВО", selected[0]["station"])
+            self.assertEqual("12", selected[0]["stationNumber"])
+        finally:
+            dialog.close()
+
+    def test_error_journal_exports_utf8_support_report(self):
+        with tempfile.TemporaryDirectory() as directory:
+            report = Path(directory) / "errors.txt"
+            window = MainWindow()
+            try:
+                window.record_error("Создание тестового акта", RuntimeError("тестовая ошибка"))
+                with (
+                    patch.object(
+                        QFileDialog, "getSaveFileName", return_value=(str(report), "")
+                    ),
+                    patch.object(window, "show_toast") as toast,
+                ):
+                    window.export_error_journal()
+                content = report.read_text(encoding="utf-8-sig")
+                self.assertIn(f"Версия: {__version__}", content)
+                self.assertIn("Создание тестового акта", content)
+                self.assertIn("RuntimeError", content)
+                self.assertIn("тестовая ошибка", content)
+                toast.assert_called_once()
+            finally:
+                window.close()
+
+    def test_empty_states_replace_empty_tables(self):
+        window = MainWindow()
+        try:
+            self.assertIs(window.batch_empty_state, window.batch_stack.currentWidget())
+            self.assertIs(window.history_empty_state, window.history_stack.currentWidget())
+            window.cb_location.setEditText("Химки")
+            window.cb_model.setEditText("МКТФ")
+            window.ed_serial.setText("1001")
+            window.cb_template.setCurrentIndex(1)
+            window.add_current_act_to_batch()
+            self.assertIs(window.batch_table, window.batch_stack.currentWidget())
+        finally:
+            window.close()
+
+    def test_open_act_action_appears_inside_action_panel(self):
+        with tempfile.TemporaryDirectory() as directory:
+            document = Path(directory) / "created.docx"
+            document.write_bytes(b"docx")
+            window = MainWindow()
+            try:
+                window.resize(1100, 850)
+                window.show()
+                self.application.processEvents()
+                window.remember_created_act(str(document))
+                self.application.processEvents()
+
+                overlay = window.open_act_overlay
+                self.assertFalse(overlay.isHidden())
+                self.assertIs(overlay.parentWidget(), window.center_actions)
+                self.assertEqual("Создать ещё", window.btn_create.text())
+                self.assertTrue(window.btn_open_last.isEnabled())
+                QTest.qWait(300)
+                self.assertFalse(overlay.isHidden())
+            finally:
+                window.close()
 
     def test_service_period_is_shown_only_for_mid_validator(self):
         window = MainWindow()
@@ -159,6 +343,12 @@ class UiSmokeTests(unittest.TestCase):
                     ["АБП / МКТФ", "Валидатор / МИД"],
                     [action.text() for action in window.btn_surname_act.menu().actions()],
                 )
+                # The main part of the split button always uses the common
+                # АБП / МКТФ template; the arrow keeps both explicit choices.
+                window.cb_model.setEditText("МИД")
+                with patch.object(window, "create_surname_only_act") as create_default:
+                    window.btn_surname_act.click()
+                create_default.assert_called_once_with(TEMPLATE_TYPE1)
                 window.app_settings["preview_before_save"] = False
                 window.cb_executor.setEditText("Лазутин Д. М. 123!")
                 window.ed_date.setText("07.10.2026")
@@ -183,7 +373,7 @@ class UiSmokeTests(unittest.TestCase):
                 self.assertEqual(2, len(list(history.glob("*.json"))))
                 for path in documents:
                     document = Document(path)
-                    text = "\n".join(
+                    all_paragraphs = (
                         [paragraph.text for paragraph in document.paragraphs]
                         + [
                             paragraph.text
@@ -192,6 +382,7 @@ class UiSmokeTests(unittest.TestCase):
                             for paragraph in cell.paragraphs
                         ]
                     )
+                    text = "\n".join(all_paragraphs)
                     self.assertIn("Лазутин Д. М.", text)
                     self.assertNotIn("123", text)
                     self.assertNotIn("07.10.2026", text)
@@ -204,6 +395,17 @@ class UiSmokeTests(unittest.TestCase):
                     self.assertTrue(
                         all(not cell.text.strip() for cell in equipment_value_cells)
                     )
+                    if "Validator_MID" in path.name:
+                        period_lines = {
+                            paragraph
+                            for paragraph in all_paragraphs
+                            if "Время оказания услуги" in paragraph
+                        }
+                        self.assertEqual(1, len(period_lines))
+                        period_line = next(iter(period_lines))
+                        self.assertNotIn("с  по", period_line)
+                        self.assertGreaterEqual(period_line.count("_______"), 2)
+                        self.assertFalse(any(char.isdigit() for char in period_line))
             finally:
                 window.close()
 
@@ -237,8 +439,8 @@ class UiSmokeTests(unittest.TestCase):
             config = json.load(stream)
         self.assertIs(config.get("check_on_start"), True)
 
-    def test_release_version_is_1_0_24(self):
-        self.assertEqual("1.0.24", __version__)
+    def test_release_version_is_1_0_25(self):
+        self.assertEqual("1.0.25", __version__)
 
     def test_date_field_keeps_manual_entry_and_uses_visible_picker_button(self):
         window = MainWindow()
@@ -365,6 +567,13 @@ class UiSmokeTests(unittest.TestCase):
             self.application.processEvents()
             self.assertEqual(42, window.ed_date.height())
             self.assertLessEqual(window.action_bar.height(), 70)
+            action_center = window.action_bar.rect().center().x()
+            create_center = window.btn_create.mapTo(
+                window.action_bar, window.btn_create.rect().center()
+            ).x()
+            self.assertLessEqual(abs(action_center - create_center), 1)
+            self.assertGreaterEqual(window.btn_create.width(), 300)
+            self.assertLessEqual(window.btn_create.width(), 340)
             self.assertLessEqual(window.cb_executor.height(), 44)
             self.assertEqual(42, window.sp_qty.height())
             self.assertEqual(42, window.sp_qty.step_column.width())
@@ -525,6 +734,7 @@ class UiSmokeTests(unittest.TestCase):
                     patch("app.ActPreviewDialog", AcceptedPreview),
                     patch.object(window, "active_excel_workbook", return_value="Tables.xlsx"),
                     patch("app.append_act_to_workbook", return_value=excel_result) as append,
+                    patch.object(window, "show_toast") as toast,
                     patch.object(QMessageBox, "exec", return_value=0),
                     patch.object(QMessageBox, "clickedButton", return_value=None),
                 ):
@@ -532,11 +742,18 @@ class UiSmokeTests(unittest.TestCase):
 
                 documents = list(output.glob("*.docx"))
                 self.assertEqual(1, len(documents))
+                toast.assert_not_called()
+                self.assertEqual("", window.lbl_status.text())
                 self.assertTrue(window.btn_open_last.isEnabled())
+                self.assertFalse(window.post_create_actions.isHidden())
+                self.assertFalse(window.open_act_overlay.isHidden())
+                self.assertFalse(window.btn_open_last.isHidden())
+                self.assertFalse(window.btn_open_output.isHidden())
                 self.assertEqual(str(documents[0]), window.last_created_act_path)
                 with patch("app.open_file") as open_document:
                     window.open_last_created_act()
                 open_document.assert_called_once_with(str(documents[0]))
+                self.assertFalse(window.open_act_overlay.isHidden())
                 self.assertEqual(1, len(list((Path(directory) / "History").glob("*.json"))))
                 values = append.call_args.args[1]
                 self.assertEqual("Крюковский", values["area"])
@@ -591,6 +808,75 @@ class UiSmokeTests(unittest.TestCase):
             finally:
                 window.close()
 
+    def test_batch_mode_replaces_single_create_actions_and_updates_badges(self):
+        window = MainWindow()
+        try:
+            window.act_batch_panel.setChecked(True)
+            self.application.processEvents()
+            self.assertTrue(window.btn_create.isHidden())
+            self.assertFalse(window.btn_batch_add.isHidden())
+            self.assertTrue(window.btn_batch_create_main.isHidden())
+
+            window.cb_location.setEditText("Химки")
+            window.cb_model.setEditText("МКТФ")
+            window.ed_serial.setText("1001")
+            window.add_current_act_to_batch()
+            self.application.processEvents()
+
+            self.assertFalse(window.btn_batch_create_main.isHidden())
+            self.assertEqual("Создать все · 1", window.btn_batch_create_main.text())
+            self.assertEqual("Массовая очередь · 1", window.batch_title.text())
+            self.assertEqual("Массовая генерация · 1", window.act_batch_panel.text())
+        finally:
+            window.close()
+
+    def test_open_act_stays_visible_when_batch_mode_is_enabled(self):
+        with tempfile.TemporaryDirectory() as directory:
+            document = Path(directory) / "created.docx"
+            document.write_bytes(b"docx")
+            window = MainWindow()
+            try:
+                window.show()
+                window.remember_created_act(str(document))
+                window.act_batch_panel.setChecked(True)
+                self.application.processEvents()
+                QTest.qWait(1200)
+
+                self.assertFalse(window.open_act_overlay.isHidden())
+                self.assertTrue(window.btn_open_last.isVisible())
+                with patch("app.open_file") as open_document:
+                    window.btn_open_last.click()
+                open_document.assert_called_once_with(str(document.resolve()))
+                QTest.qWait(300)
+                self.assertFalse(window.open_act_overlay.isHidden())
+            finally:
+                window.close()
+
+    def test_registry_autofill_briefly_marks_station_and_model(self):
+        window = MainWindow()
+        try:
+            window.equipment_registry = {
+                "1001": {"serial": "1001", "station": "ХИМКИ", "model": "МКТФ"}
+            }
+            window.ed_serial.setText("1001")
+            self.assertTrue(window.apply_equipment_for_serial())
+            self.assertEqual("auto", window.form_field_boxes["location"].property("fieldState"))
+            self.assertEqual("auto", window.form_field_boxes["model"].property("fieldState"))
+        finally:
+            window.close()
+
+    def test_wide_window_centers_and_caps_workspace(self):
+        window = MainWindow()
+        try:
+            window.resize(2560, 1440)
+            window.show()
+            self.application.processEvents()
+            self.assertEqual(1680, window.workspace.width())
+            self.assertEqual(1680, window.topbar.width())
+            self.assertGreater(window.workspace.x(), 0)
+        finally:
+            window.close()
+
     def test_batch_row_can_be_edited_and_duplicated(self):
         window = MainWindow()
         try:
@@ -612,6 +898,30 @@ class UiSmokeTests(unittest.TestCase):
             window.duplicate_selected_batch_act()
             self.assertEqual(2, window.batch_table.rowCount())
             self.assertEqual("В очереди: 2", window.batch_count_label.text())
+        finally:
+            window.close()
+
+    def test_selected_batch_row_can_be_created_on_its_own(self):
+        window = MainWindow()
+        try:
+            window.cb_location.setEditText("Химки")
+            window.cb_model.setEditText("МКТФ")
+            window.ed_serial.setText("1001")
+            window.cb_template.setCurrentIndex(1)
+            window.add_current_act_to_batch()
+            window.batch_table.selectRow(0)
+            result = {
+                "out_path": "created.docx", "excel_status": "",
+                "excel_error": "", "history_error": "",
+            }
+            with (
+                patch.object(window, "generate_act_document", return_value=result) as generate,
+                patch.object(window, "show_toast"),
+            ):
+                window.create_selected_batch_act()
+            generate.assert_called_once()
+            self.assertEqual(0, window.batch_table.rowCount())
+            self.assertIs(window.batch_empty_state, window.batch_stack.currentWidget())
         finally:
             window.close()
 
@@ -657,7 +967,6 @@ class UiSmokeTests(unittest.TestCase):
                     patch("app.OUTPUT_DIR", str(acts)),
                 ):
                     window.act_history_panel.setChecked(True)
-                    self.assertFalse(window.act_batch_panel.isChecked())
                     self.assertEqual(1, window.history_table.rowCount())
                     window.history_table.selectRow(0)
                     window.load_selected_history()
@@ -665,8 +974,36 @@ class UiSmokeTests(unittest.TestCase):
                     with patch("app.open_file") as open_document:
                         window.open_selected_history()
                         open_document.assert_called_once_with(str(document.resolve()))
+                    with patch.object(window, "show_toast"):
+                        window.duplicate_selected_history_to_batch()
+                    self.assertEqual(1, window.batch_table.rowCount())
+                    self.assertTrue(window.act_batch_panel.isChecked())
             finally:
                 window.close()
+
+    def test_batch_and_history_panels_can_stay_visible_side_by_side(self):
+        window = MainWindow()
+        try:
+            window.act_batch_panel.setChecked(True)
+            window.act_history_panel.setChecked(True)
+            window.show()
+            self.application.processEvents()
+
+            self.assertTrue(window.act_batch_panel.isChecked())
+            self.assertTrue(window.act_history_panel.isChecked())
+            self.assertFalse(window.batch_panel.isHidden())
+            self.assertFalse(window.history_panel.isHidden())
+            self.assertLess(window.batch_panel.x(), window.history_panel.x())
+            self.assertGreaterEqual(window.batch_panel.width(), 520)
+            self.assertGreaterEqual(window.history_panel.width(), 620)
+            for button in (
+                window.btn_history_refresh, window.btn_history_load,
+                window.btn_history_delete, window.btn_history_clear,
+                window.btn_history_open,
+            ):
+                self.assertGreaterEqual(button.width(), button.sizeHint().width())
+        finally:
+            window.close()
 
     def test_history_clear_keeps_docx(self):
         with tempfile.TemporaryDirectory() as directory:

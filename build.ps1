@@ -1,11 +1,27 @@
 param(
     [switch]$SkipInstall,
-    [string]$CompatibilityRuntimeDir = $env:ACTGENERATOR_COMPAT_RUNTIME
+    [switch]$SingleExeRuntime,
+    [string]$CompatibilityRuntimeDir = $env:ACTGENERATOR_COMPAT_RUNTIME,
+    [string]$OutputRoot = "dist",
+    [string]$WorkRoot = "build"
 )
 
 $ErrorActionPreference = "Stop"
 $ProjectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location -LiteralPath $ProjectDir
+
+# COLLEAGUE EDIT POINT: optional isolated roots allow a fresh build even when
+# Windows or antivirus software still holds a DLL from the previous portable.
+$OutputRoot = if ([System.IO.Path]::IsPathRooted($OutputRoot)) {
+    [System.IO.Path]::GetFullPath($OutputRoot)
+} else {
+    [System.IO.Path]::GetFullPath((Join-Path $ProjectDir $OutputRoot))
+}
+$WorkRoot = if ([System.IO.Path]::IsPathRooted($WorkRoot)) {
+    [System.IO.Path]::GetFullPath($WorkRoot)
+} else {
+    [System.IO.Path]::GetFullPath((Join-Path $ProjectDir $WorkRoot))
+}
 
 # COLLEAGUE EDIT POINT: keep the Windows portable runtime reproducible.
 $BuildPython = Join-Path $ProjectDir ".python-3.12.10\python.exe"
@@ -22,14 +38,25 @@ if (-not $SkipInstall) {
     & $BuildPython -m pip install -r requirements-build.txt
 }
 
-& $BuildPython -m PyInstaller --clean --noconfirm ActGeneratorPC.spec
+$SpecFile = if ($SingleExeRuntime) {
+    "ActGeneratorPC-onefile.spec"
+} else {
+    "ActGeneratorPC.spec"
+}
+& $BuildPython -m PyInstaller --clean --noconfirm `
+    --distpath $OutputRoot --workpath $WorkRoot $SpecFile
 if ($LASTEXITCODE -ne 0) {
     throw "PyInstaller failed with exit code $LASTEXITCODE"
 }
 
 # COLLEAGUE EDIT POINT: portable folder, EXE and release archive names.
-$PortableDir = Join-Path $ProjectDir "dist\ActGeneratorPC"
+$PortableDir = Join-Path $OutputRoot "ActGeneratorPC"
 $BuiltExe = Join-Path $PortableDir "ActGeneratorPC.exe"
+$OneFileExe = Join-Path $OutputRoot "ActGeneratorPC.exe"
+if ($SingleExeRuntime) {
+    New-Item -ItemType Directory -Path $PortableDir -Force | Out-Null
+    Copy-Item -LiteralPath $OneFileExe -Destination $BuiltExe -Force
+}
 $PortableDataDir = Join-Path $PortableDir "Data"
 $PortableConfigDir = Join-Path $PortableDataDir "Other\Configuration"
 $PortableHistoryDir = Join-Path $PortableDataDir "Other\History"
@@ -41,7 +68,7 @@ $PortableExcelTemplate = Join-Path $PortableDataDir "Templates\Tables.xlsx"
 # runtime is replaced with the runtime from a portable build that passed a real
 # GUI startup test. GitHub Actions has no X: drive, so it keeps the clean runtime
 # produced from the pinned Python and PySide versions instead.
-if ([string]::IsNullOrWhiteSpace($CompatibilityRuntimeDir)) {
+if (-not $SingleExeRuntime -and [string]::IsNullOrWhiteSpace($CompatibilityRuntimeDir)) {
     $LocalVerifiedRuntime = "X:\MySoftware\ActGeneratorPC\Portable\Data"
     if (Test-Path -LiteralPath $LocalVerifiedRuntime -PathType Container) {
         $CompatibilityRuntimeDir = $LocalVerifiedRuntime
@@ -54,7 +81,7 @@ if (-not (Test-Path -LiteralPath $BuiltExe -PathType Leaf)) {
 New-Item -ItemType Directory -Path $PortableDataDir -Force | Out-Null
 
 $ApplicationDataNames = @("Icons", "Other", "Templates", "Variables")
-if (-not [string]::IsNullOrWhiteSpace($CompatibilityRuntimeDir)) {
+if (-not $SingleExeRuntime -and -not [string]::IsNullOrWhiteSpace($CompatibilityRuntimeDir)) {
     $CompatibilityRuntimeDir = [System.IO.Path]::GetFullPath($CompatibilityRuntimeDir)
     $CompatibilityPython = Join-Path $CompatibilityRuntimeDir "python312.dll"
     # PyInstaller keeps Qt runtime DLLs inside Data\PySide6. Older builds
@@ -104,7 +131,7 @@ Copy-Item -LiteralPath $PortableExcelTemplate -Destination $PortableExcelWorkboo
 
 New-Item -ItemType Directory -Path (Join-Path $PortableDir "Acts") -Force | Out-Null
 
-$Archive = Join-Path $ProjectDir "dist\ActGeneratorPC-portable.zip"
+$Archive = Join-Path $OutputRoot "ActGeneratorPC-portable.zip"
 if (Test-Path -LiteralPath $Archive) {
     Remove-Item -LiteralPath $Archive -Force
 }

@@ -9,33 +9,36 @@ import re
 import sys
 import json
 import datetime
+import platform
 import subprocess
 import ctypes
 import ctypes.wintypes
 import shutil
 import tempfile
+import traceback
 from typing import List, Dict
 from functools import partial
 
 from update_manager import UpdateManager, confirm_healthy_startup
 from PySide6.QtCore import (
     Qt, QUrl, QSignalBlocker, QStringListModel, QEvent, QTimer,
-    QByteArray, QBuffer, QIODevice, QThread, QDate, QSize, QPoint,
+    QByteArray, QBuffer, QIODevice, QThread, QDate, QSize, QPoint, QObject,
 )
 from PySide6.QtPdf import QPdfDocument
 from PySide6.QtPdfWidgets import QPdfView
 from PySide6.QtGui import (
-    QAction, QPalette, QColor, QDesktopServices, QPixmap, QPainter, QPen, QIcon,
-    QPainterPath, QRegion, QFont
+    QAction, QActionGroup, QPalette, QColor, QDesktopServices, QPixmap, QPainter,
+    QPen, QIcon, QPainterPath, QRegion, QFont
 )
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QMessageBox, QDialog, QListWidget, QListWidgetItem,
     QAbstractItemView, QAbstractSpinBox, QInputDialog, QSpinBox, QFormLayout,
-    QStyle, QComboBox, QCompleter, QToolButton, QMenu, QFrame,
+    QComboBox, QCompleter, QToolButton, QMenu, QFrame,
     QGraphicsDropShadowEffect, QFileDialog, QScrollArea, QTableWidget,
     QTableWidgetItem, QHeaderView, QProgressBar, QDateEdit, QCalendarWidget,
-    QWidgetAction, QSizePolicy, QGridLayout,
+    QWidgetAction, QSizePolicy, QGridLayout, QStackedWidget, QCheckBox,
+    QDialogButtonBox,
 )
 
 from docx import Document
@@ -51,6 +54,7 @@ from excel_export import (
     save_excel_path,
 )
 from history_store import clear_history_records, load_history_records, save_history_record
+from version import __version__
 from equipment_registry_update import (
     RegistryUpdateError,
     allowed_stations_through_alabushevo,
@@ -66,7 +70,8 @@ from app_paths import (
     ICON_CALENDAR, ICON_DOCX,
     ICON_DONE_WORK, ICON_EQUIPMENT, ICON_EXCEL, ICON_ISSUES, ICON_LISTS,
     ICON_MATERIALS, ICON_QTY, ICON_SERIAL, ICON_SERVICES, ICON_STATION,
-    ICON_USER, ICON_XLS, LEGACY_OUTPUT_DIR, LEGACY_ROOT_FOLDERS, OTHER_DIR, OUTPUT_DIR,
+    ICON_USER, ICON_XLS, ICON_FOLDER, ICON_REFRESH, ICON_SETTINGS,
+    LEGACY_OUTPUT_DIR, LEGACY_ROOT_FOLDERS, OTHER_DIR, OUTPUT_DIR,
     SPIN_DOWN_DARK_PNG, SPIN_DOWN_LIGHT_PNG, SPIN_UP_DARK_PNG,
     SPIN_UP_LIGHT_PNG, TEMPLATE_TYPE1, TEMPLATE_TYPE2, TEMPLATES_DIR,
     VARIABLES_DIR, HISTORY_DIR,
@@ -89,6 +94,9 @@ SERVICE_MONTHS_GENITIVE = (
     "июля", "августа", "сентября", "октября", "ноября", "декабря",
 )
 SERVICE_PERIOD_BLANK = "_______часов «__»____202__года"
+# In a surname-only Validator/MID act the period must remain visibly fillable,
+# but it must not introduce a date, year or other digits into the blank form.
+SURNAME_ONLY_SERVICE_PERIOD_BLANK = "_______часов «__»________года"
 FORM_FIELD_HEIGHT = 42
 FORM_ARROW_WIDTH = 42
 
@@ -110,6 +118,97 @@ EQUIPMENT_MODEL_ALIASES = {
     "МКТФ": "МКТФ",
     "ВАЛИДАТОР ВП-FT": "Валидатор ВП-FT",
     "МИД": "МИД",
+}
+
+# COLLEAGUE EDIT POINT: visual accents available when the optional color
+# selector is enabled in File -> Appearance.  The blue scheme preserves the
+# established desktop look; Lime follows the Android visual language.
+ACCENT_SCHEMES = {
+    "blue": {
+        "title": "Синий", "primary": "#3b82f6", "hover": "#4b8df8",
+        "pressed": "#245fc7", "secondary": "#1688e6", "text": "#ffffff",
+        "soft": "rgba(59, 130, 246, 30)", "selection": "rgba(59, 130, 246, 72)",
+    },
+    "lime": {
+        "title": "Лаймовый", "primary": "#b6ee72", "hover": "#c5f38b",
+        "pressed": "#8fbe51", "secondary": "#72d7a0", "text": "#10150d",
+        "soft": "rgba(182, 238, 114, 30)", "selection": "rgba(182, 238, 114, 68)",
+    },
+    "aqua": {
+        "title": "Бирюзовый", "primary": "#42d6c5", "hover": "#62e2d4",
+        "pressed": "#2aa797", "secondary": "#35aee8", "text": "#071513",
+        "soft": "rgba(66, 214, 197, 30)", "selection": "rgba(66, 214, 197, 68)",
+    },
+    "violet": {
+        "title": "Фиолетовый", "primary": "#8b7cf6", "hover": "#a397fa",
+        "pressed": "#6758cf", "secondary": "#b46de8", "text": "#ffffff",
+        "soft": "rgba(139, 124, 246, 30)", "selection": "rgba(139, 124, 246, 68)",
+    },
+    "coral": {
+        "title": "Коралловый", "primary": "#ef786f", "hover": "#f28f87",
+        "pressed": "#c65750", "secondary": "#e99a58", "text": "#ffffff",
+        "soft": "rgba(239, 120, 111, 30)", "selection": "rgba(239, 120, 111, 68)",
+    },
+    "emerald": {
+        "title": "Изумрудный", "primary": "#34d399", "hover": "#5ee0ae",
+        "pressed": "#159a6c", "secondary": "#22c55e", "text": "#07150f",
+        "soft": "rgba(52, 211, 153, 30)", "selection": "rgba(52, 211, 153, 68)",
+    },
+    "amber": {
+        "title": "Янтарный", "primary": "#fbbf24", "hover": "#fcd05c",
+        "pressed": "#c88b0a", "secondary": "#f97316", "text": "#1a1002",
+        "soft": "rgba(251, 191, 36, 30)", "selection": "rgba(251, 191, 36, 68)",
+    },
+    "orange": {
+        "title": "Оранжевый", "primary": "#fb923c", "hover": "#fca75f",
+        "pressed": "#c86118", "secondary": "#f59e0b", "text": "#1b0c02",
+        "soft": "rgba(251, 146, 60, 30)", "selection": "rgba(251, 146, 60, 68)",
+    },
+    "rose": {
+        "title": "Розовый", "primary": "#f472b6", "hover": "#f78bc4",
+        "pressed": "#c24186", "secondary": "#ec4899", "text": "#ffffff",
+        "soft": "rgba(244, 114, 182, 30)", "selection": "rgba(244, 114, 182, 68)",
+    },
+    "indigo": {
+        "title": "Индиго", "primary": "#6366f1", "hover": "#818cf8",
+        "pressed": "#4547bd", "secondary": "#3b82f6", "text": "#ffffff",
+        "soft": "rgba(99, 102, 241, 30)", "selection": "rgba(99, 102, 241, 68)",
+    },
+    "silver": {
+        "title": "Серебристый", "primary": "#a8b3c2", "hover": "#c0c8d3",
+        "pressed": "#768395", "secondary": "#7c8da3", "text": "#0b1016",
+        "soft": "rgba(168, 179, 194, 30)", "selection": "rgba(168, 179, 194, 68)",
+    },
+    "red": {
+        "title": "Красный", "primary": "#ef4444", "hover": "#f26464",
+        "pressed": "#b91c1c", "secondary": "#f97316", "text": "#ffffff",
+        "soft": "rgba(239, 68, 68, 30)", "selection": "rgba(239, 68, 68, 68)",
+    },
+    "sky": {
+        "title": "Небесный", "primary": "#38bdf8", "hover": "#67ccfa",
+        "pressed": "#0b83b8", "secondary": "#2563eb", "text": "#06141b",
+        "soft": "rgba(56, 189, 248, 30)", "selection": "rgba(56, 189, 248, 68)",
+    },
+    "mint": {
+        "title": "Мятный", "primary": "#6ee7b7", "hover": "#8eedc8",
+        "pressed": "#38a981", "secondary": "#2dd4bf", "text": "#07150f",
+        "soft": "rgba(110, 231, 183, 30)", "selection": "rgba(110, 231, 183, 68)",
+    },
+    "gold": {
+        "title": "Золотой", "primary": "#eab308", "hover": "#f2c72d",
+        "pressed": "#a87805", "secondary": "#f59e0b", "text": "#181003",
+        "soft": "rgba(234, 179, 8, 30)", "selection": "rgba(234, 179, 8, 68)",
+    },
+    "lavender": {
+        "title": "Лавандовый", "primary": "#c084fc", "hover": "#d0a2fd",
+        "pressed": "#8b4bc2", "secondary": "#8b5cf6", "text": "#160920",
+        "soft": "rgba(192, 132, 252, 30)", "selection": "rgba(192, 132, 252, 68)",
+    },
+    "fuchsia": {
+        "title": "Фуксия", "primary": "#d946ef", "hover": "#e26af3",
+        "pressed": "#9d1caf", "secondary": "#8b5cf6", "text": "#ffffff",
+        "soft": "rgba(217, 70, 239, 30)", "selection": "rgba(217, 70, 239, 68)",
+    },
 }
 
 
@@ -497,14 +596,100 @@ def portable_stored_path(path: str) -> str:
 
 
 def icon_or_empty(path: str) -> QIcon:
-    """Handle icon or empty."""
-    resolved = resolve_portable_path(path)
+    """Return an icon using the currently selected interface icon style."""
+    resolved = preferred_interface_icon_path(path)
     return QIcon(resolved) if resolved and os.path.exists(resolved) else QIcon()
+
+
+def preferred_interface_icon_path(path: str) -> str:
+    """Return the modern SVG or its preserved legacy PNG counterpart.
+
+    The choice is stored as an application property so dialogs, menus and the
+    main form use one icon style without importing the settings subsystem.
+    Icons introduced after the legacy set fall back to their modern SVG.
+    """
+    resolved = resolve_portable_path(path)
+    application = QApplication.instance()
+    use_legacy = bool(
+        application and application.property("actgenLegacyIcons")
+    )
+    if use_legacy and resolved.lower().endswith(".svg"):
+        legacy_path = os.path.splitext(resolved)[0] + ".png"
+        if os.path.isfile(legacy_path):
+            return legacy_path
+    return resolved
+
+
+def set_interface_icon(target, path: str) -> None:
+    """Assign a switchable interface icon and remember its modern source."""
+    target.setProperty("actgenIconSource", path)
+    target.setIcon(icon_or_empty(path))
+
+
+def show_russian_text_context_menu(editor: QLineEdit, global_position) -> None:
+    """Show the standard text-editing commands with Russian labels."""
+    menu = QMenu(editor)
+    undo_action = menu.addAction("Отменить")
+    redo_action = menu.addAction("Повторить")
+    undo_action.setEnabled(editor.isUndoAvailable())
+    redo_action.setEnabled(editor.isRedoAvailable())
+    undo_action.triggered.connect(lambda: editor.undo())
+    redo_action.triggered.connect(lambda: editor.redo())
+    menu.addSeparator()
+
+    cut_action = menu.addAction("Вырезать")
+    copy_action = menu.addAction("Копировать")
+    paste_action = menu.addAction("Вставить")
+    delete_action = menu.addAction("Удалить")
+    has_selection = editor.hasSelectedText()
+    editable = not editor.isReadOnly()
+    cut_action.setEnabled(editable and has_selection)
+    copy_action.setEnabled(has_selection)
+    paste_action.setEnabled(
+        editable and bool(QApplication.clipboard().text())
+    )
+    delete_action.setEnabled(editable and has_selection)
+    cut_action.triggered.connect(lambda: editor.cut())
+    copy_action.triggered.connect(lambda: editor.copy())
+    paste_action.triggered.connect(lambda: editor.paste())
+    delete_action.triggered.connect(lambda: editor.del_())
+    menu.addSeparator()
+    select_all_action = menu.addAction("Выделить всё")
+    select_all_action.setEnabled(bool(editor.text()))
+    select_all_action.triggered.connect(lambda: editor.selectAll())
+    menu.exec(global_position)
+
+
+class RussianTextContextMenuFilter(QObject):
+    """Replace native English line-edit menus with one Russian menu app-wide."""
+
+    def eventFilter(self, watched, event):
+        """Intercept right-click menus only for editable text-line controls."""
+        if (
+            event.type() == QEvent.ContextMenu
+            and isinstance(watched, QLineEdit)
+        ):
+            show_russian_text_context_menu(watched, event.globalPos())
+            return True
+        return super().eventFilter(watched, event)
+
+
+def make_color_swatch_icon(color: str) -> QIcon:
+    """Create a compact circular preview for one selectable accent palette."""
+    pixmap = QPixmap(18, 18)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing, True)
+    painter.setPen(QPen(QColor(255, 255, 255, 80), 1))
+    painter.setBrush(QColor(color))
+    painter.drawEllipse(2, 2, 14, 14)
+    painter.end()
+    return QIcon(pixmap)
 
 
 def pixmap_or_empty(path: str, size: int = 18) -> QPixmap:
     """Handle pixmap or empty."""
-    path = resolve_portable_path(path)
+    path = preferred_interface_icon_path(path)
     if not path or not os.path.exists(path):
         return QPixmap()
     pm = QPixmap(path)
@@ -522,6 +707,8 @@ def make_form_label(text: str, icon_path: str) -> QWidget:
     lay.setSpacing(10)
 
     icon = QLabel()
+    icon.setProperty("actgenIconSource", icon_path)
+    icon.setProperty("actgenIconSize", 17)
     icon.setPixmap(pixmap_or_empty(icon_path, 17))
     icon.setFixedSize(20, 20)
     icon.setAlignment(Qt.AlignCenter)
@@ -728,20 +915,33 @@ def save_links(links: List[Dict[str, str]]):
         json.dump(clean, f, ensure_ascii=False, indent=2)
 
 
-def load_app_settings() -> Dict[str, bool]:
+def load_app_settings() -> Dict[str, object]:
     """Load app settings for this workflow."""
-    settings = {"preview_before_save": False}
+    settings: Dict[str, object] = {
+        "preview_before_save": False,
+        "theme_dark": True,
+        "accent_enabled": False,
+        "accent_scheme": "lime",
+        "legacy_icons": False,
+    }
     try:
         with open(APP_SETTINGS_CONFIG, "r", encoding="utf-8") as stream:
             saved = json.load(stream)
-        if isinstance(saved, dict) and isinstance(saved.get("preview_before_save"), bool):
-            settings["preview_before_save"] = saved["preview_before_save"]
+        if isinstance(saved, dict):
+            for key in (
+                "preview_before_save", "theme_dark", "accent_enabled",
+                "legacy_icons",
+            ):
+                if isinstance(saved.get(key), bool):
+                    settings[key] = saved[key]
+            if saved.get("accent_scheme") in ACCENT_SCHEMES:
+                settings["accent_scheme"] = saved["accent_scheme"]
     except (OSError, json.JSONDecodeError):
         pass
     return settings
 
 
-def save_app_settings(settings: Dict[str, bool]):
+def save_app_settings(settings: Dict[str, object]):
     """Save app settings for this workflow."""
     os.makedirs(os.path.dirname(APP_SETTINGS_CONFIG), exist_ok=True)
     temporary_path = APP_SETTINGS_CONFIG + ".tmp"
@@ -1119,15 +1319,28 @@ class SearchCombo(QComboBox):
         self.lineEdit().textEdited.connect(self._on_text_edited)
         self.lineEdit().returnPressed.connect(self._on_return_pressed)
 
-        gear_icon = self.style().standardIcon(QStyle.SP_FileDialogDetailedView)
-        act = QAction(gear_icon, "Редактировать список", self)
+        act = QAction("Редактировать список", self)
+        set_interface_icon(act, ICON_SETTINGS)
         act.setToolTip("Редактировать список")
         act.setIconVisibleInMenu(False)
         act.triggered.connect(self.open_editor)
         self.lineEdit().addAction(act, QLineEdit.TrailingPosition)
+        self._edit_action = act
+        self._edit_action.setVisible(False)
+        self.lineEdit().installEventFilter(self)
         self.lineEdit().setClearButtonEnabled(False)
 
         self.set_items(items)
+
+    def eventFilter(self, obj, event):
+        """Show the list-editor affordance only while its field is active."""
+        if obj is self.lineEdit():
+            if event.type() in (QEvent.Enter, QEvent.FocusIn):
+                self._edit_action.setVisible(True)
+            elif event.type() in (QEvent.Leave, QEvent.FocusOut):
+                if not self.lineEdit().hasFocus():
+                    self._edit_action.setVisible(False)
+        return super().eventFilter(obj, event)
 
     def set_items(self, items: List[str]):
         """Set items for this workflow."""
@@ -1253,6 +1466,21 @@ class SerialCombo(QComboBox):
         """Clear entered text without removing the drop-down registry."""
         self.setCurrentIndex(-1)
         self.setEditText("")
+
+
+class CollapsibleStatusLabel(QLabel):
+    """Status line that takes no vertical space while it has no message."""
+
+    def setText(self, text: str):
+        """Show the status line only for a non-empty message."""
+        value = str(text or "")
+        super().setText(value)
+        self.setVisible(bool(value.strip()))
+
+    def clear(self):
+        """Clear and collapse the status line."""
+        super().clear()
+        self.hide()
 
 
 class QuantitySpinBox(QWidget):
@@ -1427,7 +1655,7 @@ class EditableTimeEdit(QWidget):
 
         self.picker_button = QToolButton(self.container)
         self.picker_button.setObjectName("TimePickerButton")
-        self.picker_button.setIcon(icon_or_empty(ICON_ARROW_DOWN))
+        set_interface_icon(self.picker_button, ICON_ARROW_DOWN)
         self.picker_button.setIconSize(QSize(18, 18))
         self.picker_button.setFixedWidth(FORM_ARROW_WIDTH)
         self.picker_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
@@ -1572,7 +1800,7 @@ class EditableDateEdit(QWidget):
 
         self.calendar_button = QToolButton(self.container)
         self.calendar_button.setObjectName("DatePickerButton")
-        self.calendar_button.setIcon(icon_or_empty(ICON_ARROW_DOWN))
+        set_interface_icon(self.calendar_button, ICON_ARROW_DOWN)
         self.calendar_button.setIconSize(QSize(18, 18))
         self.calendar_button.setFixedWidth(FORM_ARROW_WIDTH)
         self.calendar_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
@@ -1584,15 +1812,53 @@ class EditableDateEdit(QWidget):
         self.setToolTip("Выберите дату в календаре или введите её вручную")
 
     def show_calendar(self):
-        """Show calendar for this workflow."""
+        """Open a compact themed calendar while preserving manual date entry."""
         menu = QMenu(self)
-        calendar = QCalendarWidget(menu)
+        menu.setObjectName("CalendarPopupMenu")
+        panel = QWidget(menu)
+        panel.setObjectName("CalendarPanel")
+        panel_layout = QVBoxLayout(panel)
+        panel_layout.setContentsMargins(12, 10, 12, 12)
+        panel_layout.setSpacing(8)
+
+        title = QLabel("Выберите дату", panel)
+        title.setObjectName("CalendarTitle")
+        panel_layout.addWidget(title)
+
+        calendar = QCalendarWidget(panel)
+        calendar.setObjectName("ModernCalendar")
         calendar.setGridVisible(True)
+        calendar.setNavigationBarVisible(True)
+        calendar.setFirstDayOfWeek(Qt.Monday)
+        calendar.setHorizontalHeaderFormat(QCalendarWidget.ShortDayNames)
+        calendar.setVerticalHeaderFormat(QCalendarWidget.NoVerticalHeader)
+        calendar.setMinimumSize(340, 275)
         calendar.setSelectedDate(self.editor.date())
+        for object_name, symbol in (
+            ("qt_calendar_prevmonth", "‹"),
+            ("qt_calendar_nextmonth", "›"),
+        ):
+            navigation_button = calendar.findChild(QToolButton, object_name)
+            if navigation_button is not None:
+                navigation_button.setIcon(QIcon())
+                navigation_button.setText(symbol)
+        panel_layout.addWidget(calendar)
+
+        footer = QHBoxLayout()
+        footer.addStretch(1)
+        today_button = QPushButton("Сегодня", panel)
+        today_button.setProperty("secondary", True)
+        today_button.setToolTip("Выбрать сегодняшнюю дату")
+        footer.addWidget(today_button)
+        panel_layout.addLayout(footer)
+
         action = QWidgetAction(menu)
-        action.setDefaultWidget(calendar)
+        action.setDefaultWidget(panel)
         menu.addAction(action)
         calendar.clicked.connect(lambda date: self._select_calendar_date(date, menu))
+        today_button.clicked.connect(
+            lambda: self._select_calendar_date(QDate.currentDate(), menu)
+        )
         self._calendar_menu = menu
         menu.popup(self.calendar_button.mapToGlobal(QPoint(0, self.calendar_button.height())))
 
@@ -1801,6 +2067,201 @@ class ActPreviewDialog(QDialog):
         super().done(result)
 
 
+class EquipmentDirectoryDialog(QDialog):
+    """Search the equipment directory and return one record to the act form."""
+
+    def __init__(
+        self,
+        records: List[Dict[str, str]],
+        select_callback,
+        refresh_callback=None,
+        parent=None,
+    ):
+        """Build a desktop counterpart of the Android equipment search."""
+        super().__init__(parent)
+        self.setWindowTitle("Справочник оборудования")
+        self.setObjectName("EquipmentDirectoryDialog")
+        available = QApplication.primaryScreen().availableGeometry()
+        target_width = min(1040, max(520, int(available.width() * 0.92)))
+        target_height = min(680, max(420, int(available.height() * 0.86)))
+        self.setMinimumSize(
+            min(700, target_width), min(460, target_height)
+        )
+        self.resize(target_width, target_height)
+        self.records = [dict(record) for record in records]
+        self.filtered_records: List[Dict[str, str]] = []
+        self.select_callback = select_callback
+        self.refresh_callback = refresh_callback
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(18, 18, 18, 18)
+        root.setSpacing(10)
+
+        title_row = QHBoxLayout()
+        title = QLabel("Справочник оборудования")
+        title.setObjectName("DirectoryTitle")
+        self.count_label = QLabel("")
+        self.count_label.setObjectName("BatchCount")
+        title_row.addWidget(title)
+        title_row.addStretch(1)
+        title_row.addWidget(self.count_label)
+        root.addLayout(title_row)
+
+        subtitle = QLabel(
+            "Поиск по заводскому номеру, ID, номеру на станции, станции или типу."
+        )
+        subtitle.setObjectName("FormSubtitle")
+        root.addWidget(subtitle)
+
+        # Two rows prevent the long search hint and both filters from being
+        # clipped on laptops, scaled displays and narrow remote sessions.
+        filters = QGridLayout()
+        filters.setHorizontalSpacing(10)
+        filters.setVerticalSpacing(8)
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Введите номер, ID, станцию или оборудование…")
+        self.station_filter = QComboBox()
+        self.station_filter.addItem("Все станции")
+        self.station_filter.addItems(sorted({r["station"] for r in self.records}))
+        self.model_filter = QComboBox()
+        self.model_filter.addItem("Все типы")
+        self.model_filter.addItems(sorted({r["model"] for r in self.records}))
+        filters.addWidget(self.search, 0, 0, 1, 2)
+        filters.addWidget(self.station_filter, 1, 0)
+        filters.addWidget(self.model_filter, 1, 1)
+        filters.setColumnStretch(0, 1)
+        filters.setColumnStretch(1, 1)
+        root.addLayout(filters)
+
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(
+            ("Станция", "Тип", "Заводской №", "ID", "№ станции")
+        )
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.setAlternatingRowColors(True)
+        self.table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.table.verticalHeader().setVisible(False)
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(0, QHeaderView.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.Stretch)
+        root.addWidget(self.table, 1)
+
+        self.details = QLabel("Выберите строку, чтобы увидеть карточку оборудования.")
+        self.details.setObjectName("DirectoryDetails")
+        self.details.setWordWrap(True)
+        root.addWidget(self.details)
+
+        buttons = QHBoxLayout()
+        self.refresh_button = QPushButton("Обновить данные")
+        self.refresh_button.setProperty("secondary", True)
+        set_interface_icon(self.refresh_button, ICON_REFRESH)
+        self.refresh_button.setVisible(refresh_callback is not None)
+        self.refresh_button.clicked.connect(self._refresh_directory)
+        close_button = QPushButton("Закрыть")
+        close_button.setProperty("secondary", True)
+        close_button.clicked.connect(self.reject)
+        self.select_button = QPushButton("Подставить в акт")
+        self.select_button.setProperty("primaryAction", True)
+        set_interface_icon(self.select_button, ICON_DONE_WORK)
+        self.select_button.setEnabled(False)
+        self.select_button.clicked.connect(self._select_current)
+        buttons.addWidget(self.refresh_button)
+        buttons.addStretch(1)
+        buttons.addWidget(close_button)
+        buttons.addWidget(self.select_button)
+        root.addLayout(buttons)
+
+        self.search.textChanged.connect(self.refresh_results)
+        self.station_filter.currentTextChanged.connect(self.refresh_results)
+        self.model_filter.currentTextChanged.connect(self.refresh_results)
+        self.table.itemSelectionChanged.connect(self._update_details)
+        self.table.cellDoubleClicked.connect(lambda *_args: self._select_current())
+        self.refresh_results()
+
+    @staticmethod
+    def _search_text(record: Dict[str, str]) -> str:
+        """Return normalized searchable text for one equipment record."""
+        return normalize_search(" ".join((
+            record.get("station", ""), record.get("model", ""),
+            record.get("serial", ""), record.get("equipmentId", ""),
+            record.get("stationNumber", ""),
+        )))
+
+    def refresh_results(self):
+        """Apply text and category filters to the equipment table."""
+        query = normalize_search(self.search.text())
+        station = self.station_filter.currentText()
+        model = self.model_filter.currentText()
+        self.filtered_records = [
+            record for record in self.records
+            if (not query or query in self._search_text(record))
+            and (station == "Все станции" or record["station"] == station)
+            and (model == "Все типы" or record["model"] == model)
+        ]
+        self.table.setRowCount(0)
+        for row, record in enumerate(self.filtered_records):
+            self.table.insertRow(row)
+            values = (
+                record.get("station", ""), record.get("model", ""),
+                record.get("serial", ""), record.get("equipmentId", "") or "—",
+                record.get("stationNumber", "") or "—",
+            )
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                if column == 0:
+                    item.setData(Qt.UserRole, dict(record))
+                self.table.setItem(row, column, item)
+        self.count_label.setText(f"Найдено: {len(self.filtered_records)}")
+        self.details.setText(
+            "Ничего не найдено. Измените запрос или фильтры."
+            if not self.filtered_records
+            else "Выберите строку, чтобы увидеть карточку оборудования."
+        )
+        self.select_button.setEnabled(False)
+
+    def selected_record(self) -> Dict[str, str]:
+        """Return the currently selected directory record."""
+        rows = self.table.selectionModel().selectedRows()
+        if not rows:
+            return {}
+        item = self.table.item(rows[0].row(), 0)
+        return dict(item.data(Qt.UserRole)) if item is not None else {}
+
+    def _update_details(self):
+        """Show a compact equipment card below the result list."""
+        record = self.selected_record()
+        self.select_button.setEnabled(bool(record))
+        if not record:
+            return
+        self.details.setText(
+            f"{record['model']} · {record['station']}   |   "
+            f"Заводской № {record['serial']}   |   "
+            f"ID: {record.get('equipmentId') or '—'}   |   "
+            f"№ на станции: {record.get('stationNumber') or '—'}"
+        )
+
+    def _select_current(self):
+        """Copy the selected equipment card into the main form."""
+        record = self.selected_record()
+        if not record:
+            return
+        self.select_callback(record)
+        self.accept()
+
+    def _refresh_directory(self):
+        """Close the search window and start the guarded registry update."""
+        callback = self.refresh_callback
+        self.reject()
+        if callback is not None:
+            callback()
+
+
 # -----------------------------
 # Main window
 # -----------------------------
@@ -1808,6 +2269,10 @@ class MainWindow(QMainWindow):
     def __init__(self):
         """Initialize the MainWindow and its runtime state."""
         super().__init__()
+        self._russian_context_menu_filter = RussianTextContextMenuFilter(self)
+        QApplication.instance().installEventFilter(
+            self._russian_context_menu_filter
+        )
         ensure_dirs()
         ensure_default_icons()
         ensure_arrow_icons()
@@ -1815,9 +2280,13 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Генератор актов")
         self.resize(1100, 820)
 
-        self.dark_theme = True
         self.links = load_links()
         self.app_settings = load_app_settings()
+        self.dark_theme = bool(self.app_settings.get("theme_dark", True))
+        QApplication.instance().setProperty(
+            "actgenLegacyIcons",
+            bool(self.app_settings.get("legacy_icons", False)),
+        )
 
         self.data_lists = {
             key: read_lines(path)
@@ -1845,9 +2314,15 @@ class MainWindow(QMainWindow):
         self.last_created_act_path = ""
         self.form_field_boxes = {}
         self.form_error_labels = {}
+        self.form_field_widgets = {}
+        self._open_action_requested = False
+        self._open_action_animation = None
+        # Runtime-only diagnostic entries intentionally exclude form contents.
+        # A user can export them from File when a colleague needs a report.
+        self.error_journal: List[Dict[str, str]] = []
 
         self._build_ui()
-        self.apply_theme(True)
+        self.apply_theme(self.dark_theme)
         self.refresh_links_menu()
 
     # ---- Menu round mask helpers ----
@@ -1905,12 +2380,22 @@ class MainWindow(QMainWindow):
 
     def _menu_css(self) -> str:
         """Handle menu css in MainWindow."""
+        accent_key = (
+            str(self.app_settings.get("accent_scheme", "lime"))
+            if self.app_settings.get("accent_enabled", False)
+            else "blue"
+        )
+        item_press = ACCENT_SCHEMES.get(
+            accent_key, ACCENT_SCHEMES["blue"]
+        )["soft"]
         if self.dark_theme:
-            menu_bg = "rgba(22, 24, 28, 210)"
+            menu_bg = (
+                "rgba(29, 37, 26, 225)"
+                if accent_key == "lime" else "rgba(22, 24, 28, 210)"
+            )
             menu_border = "rgba(255, 255, 255, 35)"
             menu_sep = "rgba(255, 255, 255, 28)"
             item_hover = "rgba(255, 255, 255, 18)"
-            item_press = "rgba(45, 127, 249, 55)"
             text = "#e8eaed"
             disabled = "rgba(232, 234, 237, 120)"
         else:
@@ -1918,7 +2403,6 @@ class MainWindow(QMainWindow):
             menu_border = "rgba(0, 0, 0, 38)"
             menu_sep = "rgba(0, 0, 0, 26)"
             item_hover = "rgba(0, 0, 0, 6)"
-            item_press = "rgba(45, 127, 249, 45)"
             text = "#111111"
             disabled = "rgba(17, 17, 17, 120)"
 
@@ -1972,6 +2456,42 @@ class MainWindow(QMainWindow):
             if canonical_station(record["station"]).casefold() in allowed
         }
 
+    def open_equipment_directory(self):
+        """Open searchable equipment cards backed by the active registry."""
+        records = sorted(
+            self.equipment_registry.values(),
+            key=lambda record: (
+                record.get("station", "").casefold(),
+                record.get("model", "").casefold(),
+                record.get("serial", "").casefold(),
+            ),
+        )
+        dialog = EquipmentDirectoryDialog(
+            records,
+            self.apply_equipment_record_to_form,
+            self.update_equipment_registry_from_tables,
+            self,
+        )
+        dialog.exec()
+
+    def apply_equipment_record_to_form(self, record: Dict[str, str]):
+        """Fill station, equipment type and factory number from a card."""
+        station = str(record.get("station", ""))
+        model = str(record.get("model", ""))
+        serial = str(record.get("serial", ""))
+        self.cb_location.setEditText(station)
+        self.cb_model.setEditText(model)
+        self.refresh_serials_for_station(station)
+        self.ed_serial.setText(serial)
+        for key in ("location", "model", "serial"):
+            self._mark_field_auto(key)
+        self.update_template_hint()
+        self.show_toast(
+            f"Оборудование подставлено: {model} · {station}",
+            tone="success",
+            duration=3200,
+        )
+
     def update_equipment_registry_from_tables(self):
         """Refresh station/model/serial bindings from the approved tables."""
         answer = QMessageBox.question(
@@ -1996,6 +2516,7 @@ class MainWindow(QMainWindow):
             self.cb_location.setEditText(current_station)
             self.refresh_serials_for_station(current_station)
         except RegistryUpdateError as exc:
+            self.record_error("Обновление реестра оборудования", exc)
             QMessageBox.critical(
                 self,
                 "Обновление оборудования",
@@ -2038,6 +2559,7 @@ class MainWindow(QMainWindow):
         try:
             save_excel_path(EXCEL_EXPORT_CONFIG, path)
         except OSError as exc:
+            self.record_error("Сохранение пути к Excel-таблице", exc)
             QMessageBox.critical(
                 self,
                 "Настройка Excel",
@@ -2055,6 +2577,7 @@ class MainWindow(QMainWindow):
             )
             save_excel_path(EXCEL_EXPORT_CONFIG, "")
         except (ExcelExportError, OSError) as exc:
+            self.record_error("Подготовка встроенной Excel-таблицы", exc)
             QMessageBox.critical(
                 self,
                 "Встроенная Excel-таблица",
@@ -2075,6 +2598,7 @@ class MainWindow(QMainWindow):
         try:
             path = self.active_excel_workbook()
         except ExcelExportError as exc:
+            self.record_error("Открытие Excel-таблицы", exc)
             QMessageBox.critical(self, "Excel-таблица", str(exc))
             return
         open_file(path)
@@ -2085,11 +2609,89 @@ class MainWindow(QMainWindow):
         try:
             save_app_settings(self.app_settings)
         except OSError as error:
+            self.record_error("Сохранение настройки предпросмотра", error)
             QMessageBox.warning(
                 self,
                 "Настройки",
                 f"Не удалось сохранить настройку предпросмотра:\n{error}",
             )
+
+    def record_error(self, context: str, error: BaseException, details: str = ""):
+        """Store a sanitized runtime error for an optional support export."""
+        entry = {
+            "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
+            "context": str(context or "Неизвестная операция"),
+            "type": type(error).__name__,
+            "message": str(error),
+            "details": str(details or ""),
+            "traceback": "".join(
+                traceback.format_exception(type(error), error, error.__traceback__)
+            ).strip(),
+        }
+        self.error_journal.append(entry)
+        # Bound memory usage during long sessions while retaining enough data
+        # for a useful colleague-facing report.
+        del self.error_journal[:-200]
+
+    def build_error_report(self) -> str:
+        """Return a text diagnostic report without entered act information."""
+        lines = [
+            "ActGeneratorPC — журнал ошибок",
+            f"Версия: {__version__}",
+            f"Сформирован: {datetime.datetime.now().isoformat(timespec='seconds')}",
+            f"ОС: {platform.platform()}",
+            f"Python: {platform.python_version()}",
+            f"Portable EXE: {'да' if getattr(sys, 'frozen', False) else 'нет'}",
+            f"Шаблон АБП / МКТФ: {'найден' if os.path.isfile(TEMPLATE_TYPE1) else 'не найден'}",
+            f"Шаблон Валидатор / MID: {'найден' if os.path.isfile(TEMPLATE_TYPE2) else 'не найден'}",
+            f"Реестр оборудования: {'найден' if os.path.isfile(EQUIPMENT_REGISTRY) else 'не найден'}",
+            "",
+        ]
+        if not self.error_journal:
+            lines.append("За текущий запуск ошибок не зафиксировано.")
+            return "\n".join(lines) + "\n"
+        lines.append(f"Записей: {len(self.error_journal)}")
+        for number, entry in enumerate(self.error_journal, 1):
+            lines.extend((
+                "",
+                f"[{number}] {entry['timestamp']} — {entry['context']}",
+                f"Тип: {entry['type']}",
+                f"Сообщение: {entry['message']}",
+            ))
+            if entry["details"]:
+                lines.append(f"Подробности: {entry['details']}")
+            if entry["traceback"]:
+                lines.extend(("Traceback:", entry["traceback"]))
+        return "\n".join(lines) + "\n"
+
+    def export_error_journal(self):
+        """Save the current-session diagnostic report for a colleague."""
+        stamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        default_path = os.path.join(APP_DIR, f"ActGeneratorPC-errors-{stamp}.txt")
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Экспорт журнала ошибок",
+            default_path,
+            "Текстовый файл (*.txt)",
+        )
+        if not path:
+            return
+        if not path.casefold().endswith(".txt"):
+            path += ".txt"
+        try:
+            with open(path, "w", encoding="utf-8-sig", newline="\n") as stream:
+                stream.write(self.build_error_report())
+        except OSError as error:
+            self.record_error("Экспорт журнала ошибок", error)
+            QMessageBox.critical(
+                self, "Экспорт журнала ошибок", f"Не удалось сохранить файл:\n{error}"
+            )
+            return
+        self.show_toast(
+            f"Журнал ошибок сохранён: {os.path.basename(path)}",
+            tone="success",
+            duration=4200,
+        )
 
     def _build_topbar(self) -> QWidget:
         # COLLEAGUE EDIT POINT: add or reorder top-level menus in this method.
@@ -2097,16 +2699,16 @@ class MainWindow(QMainWindow):
         bar = QFrame()
         bar.setObjectName("TopBar")
         lay = QHBoxLayout(bar)
-        lay.setContentsMargins(10, 8, 10, 8)
-        lay.setSpacing(8)
+        lay.setContentsMargins(8, 6, 8, 6)
+        lay.setSpacing(6)
 
         brand = QWidget()
         brand_layout = QHBoxLayout(brand)
-        brand_layout.setContentsMargins(6, 0, 14, 0)
-        brand_layout.setSpacing(9)
+        brand_layout.setContentsMargins(4, 0, 10, 0)
+        brand_layout.setSpacing(7)
         brand_icon = QLabel()
-        brand_icon.setPixmap(icon_or_empty(ICON_BRAND).pixmap(48, 48))
-        brand_icon.setFixedSize(50, 50)
+        brand_icon.setPixmap(icon_or_empty(ICON_BRAND).pixmap(40, 40))
+        brand_icon.setFixedSize(42, 42)
         brand_title = QLabel("ГЕНЕРАТОР АКТОВ")
         brand_title.setObjectName("BrandTitle")
         brand_layout.addWidget(brand_icon)
@@ -2124,9 +2726,12 @@ class MainWindow(QMainWindow):
         self.act_check_updates = QAction("Проверить обновления", self)
         self.act_check_updates.triggered.connect(self.check_for_updates)
         self.menu_file.addAction(self.act_check_updates)
+        self.act_export_errors = QAction("Экспорт журнала ошибок…", self)
+        self.act_export_errors.triggered.connect(self.export_error_journal)
+        self.menu_file.addAction(self.act_export_errors)
         self.menu_file.addSection("Режимы")
 
-        self.act_batch_panel = QAction("Панель массового создания актов", self)
+        self.act_batch_panel = QAction("Массовая генерация", self)
         self.act_batch_panel.setCheckable(True)
         self.act_batch_panel.setChecked(False)
         self.act_batch_panel.toggled.connect(self.set_batch_panel_visible)
@@ -2138,7 +2743,7 @@ class MainWindow(QMainWindow):
         )
         self.act_preview_enabled.toggled.connect(self.set_preview_enabled)
 
-        self.act_history_panel = QAction("История актов", self)
+        self.act_history_panel = QAction("История", self)
         self.act_history_panel.setCheckable(True)
         self.act_history_panel.setChecked(False)
         self.act_history_panel.toggled.connect(self.set_history_panel_visible)
@@ -2150,7 +2755,65 @@ class MainWindow(QMainWindow):
         self.menu_file.addAction(self.act_preview_enabled)
         self.menu_file.addAction(self.act_batch_panel)
         self.menu_file.addAction(self.act_history_panel)
+        self.menu_file.addSection("Оформление")
+
+        self.theme_action_group = QActionGroup(self)
+        self.theme_action_group.setExclusive(True)
+        self.act_theme_dark = QAction("Тёмная тема", self, checkable=True)
+        self.act_theme_light = QAction("Светлая тема", self, checkable=True)
+        self.theme_action_group.addAction(self.act_theme_dark)
+        self.theme_action_group.addAction(self.act_theme_light)
+        self.act_theme_dark.setChecked(self.dark_theme)
+        self.act_theme_light.setChecked(not self.dark_theme)
+        self.act_theme_dark.triggered.connect(lambda: self.set_theme_mode(True))
+        self.act_theme_light.triggered.connect(lambda: self.set_theme_mode(False))
+        self.menu_file.addAction(self.act_theme_dark)
+        self.menu_file.addAction(self.act_theme_light)
+
+        self.act_legacy_icons = QAction(
+            "Использовать старые цветные иконки", self, checkable=True
+        )
+        self.act_legacy_icons.setChecked(
+            bool(self.app_settings.get("legacy_icons", False))
+        )
+        self.act_legacy_icons.toggled.connect(self.set_legacy_icons)
+        set_interface_icon(self.act_legacy_icons, ICON_LISTS)
+        self.menu_file.addAction(self.act_legacy_icons)
+
+        self.act_accent_enabled = QAction(
+            "Разрешить выбор цветовой гаммы", self, checkable=True
+        )
+        self.act_accent_enabled.setChecked(
+            bool(self.app_settings.get("accent_enabled", False))
+        )
+        self.act_accent_enabled.toggled.connect(self.set_accent_enabled)
+        self.menu_file.addAction(self.act_accent_enabled)
+
+        self.menu_accent = QMenu("Цветовая гамма", self)
+        self.accent_action_group = QActionGroup(self)
+        self.accent_action_group.setExclusive(True)
+        self.accent_actions = {}
+        selected_accent = str(self.app_settings.get("accent_scheme", "lime"))
+        for key, scheme in ACCENT_SCHEMES.items():
+            action = QAction(scheme["title"], self, checkable=True)
+            action.setIcon(make_color_swatch_icon(scheme["primary"]))
+            action.setIconVisibleInMenu(True)
+            action.setChecked(key == selected_accent)
+            action.triggered.connect(partial(self.set_accent_scheme, key))
+            self.accent_action_group.addAction(action)
+            self.menu_accent.addAction(action)
+            self.accent_actions[key] = action
+        self.menu_accent.setEnabled(self.act_accent_enabled.isChecked())
+        self.menu_file.addMenu(self.menu_accent)
         self.menu_file.addSection("Excel и справочники")
+
+        self.act_open_equipment_directory = QAction(
+            "Открыть справочник оборудования", self
+        )
+        self.act_open_equipment_directory.triggered.connect(
+            self.open_equipment_directory
+        )
+        self.menu_file.addAction(self.act_open_equipment_directory)
 
         self.act_update_equipment_registry = QAction(
             "Обновить станции и оборудование из таблиц", self
@@ -2203,7 +2866,8 @@ class MainWindow(QMainWindow):
 
         def add_list(title: str, key: str, icon_path: str):
             """Add list for this workflow."""
-            a = QAction(icon_or_empty(icon_path), f"Редактировать: {title}", self)
+            a = QAction(f"Редактировать: {title}", self)
+            set_interface_icon(a, icon_path)
             a.setIconVisibleInMenu(True)
             a.triggered.connect(lambda: self.open_list_editor(title, key))
             self.menu_lists.addAction(a)
@@ -2222,32 +2886,43 @@ class MainWindow(QMainWindow):
         self.btn_lists.setPopupMode(QToolButton.InstantPopup)
         self.btn_lists.setMenu(self.menu_lists)
 
+        self.btn_reference = QToolButton()
+        self.btn_reference.setText("Справочник")
+        self.btn_reference.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        self.btn_reference.clicked.connect(self.open_equipment_directory)
+
         # --- Theme button
         self.btn_theme = QToolButton()
         self.btn_theme.setText("Тема")
         self.btn_theme.setToolButtonStyle(Qt.ToolButtonTextOnly)
         self.btn_theme.setCheckable(True)
-        self.btn_theme.setChecked(True)
+        self.btn_theme.setChecked(self.dark_theme)
         self.btn_theme.clicked.connect(self._toggle_theme_from_button)
 
-        for b in (self.btn_file, self.btn_links, self.btn_lists, self.btn_theme):
-            b.setMinimumHeight(40)
+        for b in (
+            self.btn_file, self.btn_links, self.btn_lists,
+            self.btn_reference, self.btn_theme,
+        ):
+            b.setFixedHeight(36)
             b.setIconSize(QSize(19, 19))
 
-        self.btn_file.setMinimumWidth(104)
-        self.btn_links.setMinimumWidth(104)
-        self.btn_lists.setMinimumWidth(104)
-        self.btn_theme.setMinimumWidth(100)
+        self.btn_file.setFixedWidth(82)
+        self.btn_links.setFixedWidth(82)
+        self.btn_lists.setFixedWidth(82)
+        self.btn_reference.setFixedWidth(104)
+        self.btn_theme.setFixedWidth(86)
 
         lay.addWidget(self.btn_file)
         lay.addWidget(self.btn_links)
         lay.addWidget(self.btn_lists)
+        lay.addWidget(self.btn_reference)
         lay.addStretch(1)
         lay.addWidget(self.btn_theme)
 
         self._beautify_menu(self.menu_file)
         self._beautify_menu(self.menu_links)
         self._beautify_menu(self.menu_lists)
+        self._beautify_menu(self.menu_accent)
 
         return bar
 
@@ -2272,15 +2947,94 @@ class MainWindow(QMainWindow):
         layout.addWidget(error_label)
 
         self.form_field_boxes[key] = box
+        self.form_field_widgets[key] = widget
         self.form_error_labels[key] = error_label
+        self._bind_field_state(key, widget)
+        self._refresh_field_state(key)
         form.addRow(label, box)
         return box
+
+    @staticmethod
+    def _field_value(widget: QWidget) -> str:
+        """Return a normalized display value for field-state styling."""
+        if isinstance(widget, QuantitySpinBox):
+            return str(widget.value()) if widget.value() else ""
+        if isinstance(widget, EditableDateEdit):
+            return widget.text().strip()
+        if isinstance(widget, EditableTimeEdit):
+            return widget.text().replace(":", "").strip()
+        if isinstance(widget, QComboBox):
+            return widget.currentText().strip()
+        if isinstance(widget, QLineEdit):
+            return widget.text().strip()
+        editors = widget.findChildren(QLineEdit)
+        if editors:
+            return "".join(editor.text().replace(":", "").strip() for editor in editors)
+        return ""
+
+    def _bind_field_state(self, key: str, widget: QWidget):
+        """Keep empty/filled/error styling synchronized with user input."""
+        def changed(*_args):
+            """Refresh styling after a value is edited by the user."""
+            box = self.form_field_boxes.get(key)
+            if box is not None:
+                box.setProperty("autoFilled", False)
+            self._refresh_field_state(key)
+
+        if isinstance(widget, QuantitySpinBox):
+            widget.editor.valueChanged.connect(changed)
+        elif isinstance(widget, EditableDateEdit):
+            widget.editor.dateChanged.connect(changed)
+        elif isinstance(widget, EditableTimeEdit):
+            widget.editor.textChanged.connect(changed)
+        elif isinstance(widget, QComboBox):
+            widget.currentTextChanged.connect(changed)
+        elif isinstance(widget, QLineEdit):
+            widget.textChanged.connect(changed)
+
+    def _refresh_field_state(self, key: str):
+        """Apply the visual state stored on a field wrapper."""
+        box = self.form_field_boxes.get(key)
+        widget = self.form_field_widgets.get(key)
+        error = self.form_error_labels.get(key)
+        if box is None or widget is None:
+            return
+        if error is not None and not error.isHidden() and error.text():
+            state = "error"
+        elif box.property("autoFilled"):
+            state = "auto"
+        elif self._field_value(widget):
+            state = "filled"
+        else:
+            state = "empty"
+        box.setProperty("fieldState", state)
+        box.style().unpolish(box)
+        box.style().polish(box)
+        box.update()
+
+    def _mark_field_auto(self, key: str, duration: int = 1400):
+        """Briefly highlight a value filled from the equipment registry."""
+        box = self.form_field_boxes.get(key)
+        if box is None:
+            return
+        box.setProperty("autoFilled", True)
+        self._refresh_field_state(key)
+
+        def finish():
+            """Return the temporary registry highlight to the filled state."""
+            if box.property("autoFilled"):
+                box.setProperty("autoFilled", False)
+                self._refresh_field_state(key)
+
+        QTimer.singleShot(duration, finish)
 
     def clear_field_errors(self):
         """Hide all field-level validation messages."""
         for label in self.form_error_labels.values():
             label.clear()
             label.hide()
+        for key in self.form_field_boxes:
+            self._refresh_field_state(key)
 
     def show_field_error(self, key: str, message: str):
         """Show a validation message directly below its related form field."""
@@ -2290,6 +3044,7 @@ class MainWindow(QMainWindow):
             return
         label.setText(message)
         label.show()
+        self._refresh_field_state(key)
 
     def show_toast(
         self, message: str, *, tone: str = "success", duration: int = 4500,
@@ -2343,12 +3098,38 @@ class MainWindow(QMainWindow):
         """Close only the notification that still belongs to this timer."""
         if self._toast is toast:
             self._toast = None
-        toast.deleteLater()
+        try:
+            toast.deleteLater()
+        except RuntimeError:
+            # The parent window may already have destroyed the C++ widget
+            # before this delayed callback runs (common in tests and shutdown).
+            pass
 
     def resizeEvent(self, event):
         """Reposition overlays when the main window size changes."""
         super().resizeEvent(event)
+        self._resize_workspace_shell()
         self._position_toast()
+
+    def _resize_workspace_shell(self):
+        """Center the workspace and cap line length on wide 2K displays."""
+        host = self.centralWidget()
+        if host is None:
+            return
+        both_panels = bool(
+            getattr(self, "act_batch_panel", None)
+            and self.act_batch_panel.isChecked()
+            and getattr(self, "act_history_panel", None)
+            and self.act_history_panel.isChecked()
+        )
+        maximum = 1880 if both_panels else 1680
+        target = min(maximum, max(760, host.width() - 36))
+        for widget in (
+            getattr(self, "topbar", None),
+            getattr(self, "workspace", None),
+        ):
+            if widget is not None:
+                widget.setFixedWidth(target)
 
     def _build_ui(self):
         """Build ui for this workflow."""
@@ -2360,22 +3141,28 @@ class MainWindow(QMainWindow):
         root.setSpacing(14)
 
         self.topbar = self._build_topbar()
-        root.addWidget(self.topbar)
+        self.topbar.setMaximumWidth(1680)
+        root.addWidget(self.topbar, 0, Qt.AlignHCenter)
         self._beautify_topbar()
 
-        content = QHBoxLayout()
+        self.workspace = QWidget()
+        self.workspace.setObjectName("Workspace")
+        self.workspace.setMaximumWidth(1680)
+        content = QHBoxLayout(self.workspace)
+        content.setContentsMargins(0, 0, 0, 0)
         content.setSpacing(12)
-        root.addLayout(content, 1)
+        root.addWidget(self.workspace, 1, Qt.AlignHCenter)
 
         left_panel = QWidget()
+        self.left_panel = left_panel
         left_layout = QVBoxLayout(left_panel)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(10)
         content.addWidget(left_panel, 1)
 
-        form_card = QFrame()
-        form_card.setObjectName("FormCard")
-        form_card_layout = QVBoxLayout(form_card)
+        self.form_card = QFrame()
+        self.form_card.setObjectName("FormCard")
+        form_card_layout = QVBoxLayout(self.form_card)
         form_card_layout.setContentsMargins(18, 14, 18, 14)
         form_card_layout.setSpacing(0)
 
@@ -2394,7 +3181,7 @@ class MainWindow(QMainWindow):
         self.form_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.form_scroll.setWidget(form_host)
         form_card_layout.addWidget(self.form_scroll, 1)
-        left_layout.addWidget(form_card, 1)
+        left_layout.addWidget(self.form_card, 1)
 
         self.ed_date = EditableDateEdit()
         # COLLEAGUE EDIT POINT: form field labels, icons and ordering start here.
@@ -2532,20 +3319,31 @@ class MainWindow(QMainWindow):
         action_bar.setObjectName("ActionBar")
         self.action_bar = action_bar
         action_layout = QGridLayout(action_bar)
+        self.action_layout = action_layout
         action_layout.setContentsMargins(10, 8, 10, 8)
         action_layout.setHorizontalSpacing(12)
-        action_layout.setVerticalSpacing(0)
+        action_layout.setVerticalSpacing(4)
+        action_shadow = QGraphicsDropShadowEffect(action_bar)
+        action_shadow.setBlurRadius(18)
+        action_shadow.setOffset(0, 4)
+        action_shadow.setColor(QColor(0, 0, 0, 75))
+        action_bar.setGraphicsEffect(action_shadow)
         self.btn_clear = QPushButton("Очистить")
         self.btn_clear.setProperty("secondary", True)
-        self.btn_clear.setMinimumHeight(38)
+        self.btn_clear.setFixedSize(108, 38)
         self.btn_clear.clicked.connect(self.clear_form)
         self.btn_batch_add = QPushButton("Добавить в очередь")
-        self.btn_batch_add.setMinimumHeight(38)
+        self.btn_batch_add.setFixedSize(184, 42)
         self.btn_batch_add.clicked.connect(self.add_current_act_to_batch)
         self.btn_batch_add.hide()
-        self.btn_open_output = QPushButton("Открыть папку с актами")
+        self.btn_open_output = QPushButton("Папка актов")
+        self.btn_open_output.setObjectName("OpenOutputButton")
         self.btn_open_output.setProperty("secondary", True)
+        set_interface_icon(self.btn_open_output, ICON_FOLDER)
+        self.btn_open_output.setIconSize(QSize(18, 18))
         self.btn_open_output.setMinimumHeight(38)
+        self.btn_open_output.setFixedWidth(146)
+        self.btn_open_output.setToolTip("Открыть папку с созданными актами")
         self.btn_open_output.clicked.connect(lambda: open_folder(OUTPUT_DIR))
         self.btn_surname_act = QToolButton()
         self.btn_surname_act.setObjectName("SurnameActButton")
@@ -2556,7 +3354,7 @@ class MainWindow(QMainWindow):
         self.btn_surname_act.setFixedHeight(FORM_FIELD_HEIGHT)
         self.btn_surname_act.setMinimumWidth(174)
         self.btn_surname_act.setToolTip(
-            "Нажатие создаёт акт по выбранному шаблону; стрелка открывает выбор"
+            "Нажатие создаёт акт АБП / МКТФ; стрелка открывает выбор шаблона"
         )
         surname_menu = QMenu(self.btn_surname_act)
         surname_type1 = surname_menu.addAction("АБП / МКТФ")
@@ -2569,9 +3367,7 @@ class MainWindow(QMainWindow):
         )
         self.btn_surname_act.setMenu(surname_menu)
         self.btn_surname_act.clicked.connect(
-            lambda: self.create_surname_only_act(
-                self.selected_template(self.cb_model.text())
-            )
+            lambda: self.create_surname_only_act(TEMPLATE_TYPE1)
         )
         for button in (
             self.btn_clear, self.btn_batch_add, self.btn_open_output,
@@ -2580,26 +3376,53 @@ class MainWindow(QMainWindow):
             button.setIconSize(QSize(18, 18))
 
         self.btn_create = QPushButton("Создать акт")
+        self.btn_create.setObjectName("CreateActButton")
         self.btn_create.setProperty("primaryAction", True)
-        self.btn_create.setMinimumSize(250, 46)
-        self.btn_create.setMaximumWidth(330)
+        self.btn_create.setProperty("secondary", False)
+        self.btn_create.setFixedHeight(48)
+        self.btn_create.setMinimumWidth(300)
+        self.btn_create.setMaximumWidth(340)
+        self.btn_create.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         create_shadow = QGraphicsDropShadowEffect(self.btn_create)
-        create_shadow.setBlurRadius(24)
-        create_shadow.setOffset(0, 6)
-        create_shadow.setColor(QColor(37, 99, 235, 105))
+        create_shadow.setBlurRadius(20)
+        create_shadow.setOffset(0, 4)
+        create_shadow.setColor(QColor(37, 99, 235, 92))
         self.btn_create.setGraphicsEffect(create_shadow)
         self.btn_create.clicked.connect(self.create_act)
 
+        self.btn_batch_create_main = QPushButton("Создать все · 0")
+        self.btn_batch_create_main.setObjectName("BatchCreateMainButton")
+        self.btn_batch_create_main.setProperty("primaryAction", True)
+        self.btn_batch_create_main.setFixedSize(184, 42)
+        self.btn_batch_create_main.clicked.connect(self.create_batch_acts)
+        self.btn_batch_create_main.hide()
+
         self.btn_open_last = QPushButton("Открыть акт")
         self.btn_open_last.setObjectName("OpenLastActButton")
-        self.btn_open_last.setProperty("secondary", True)
-        self.btn_open_last.setFixedHeight(46)
-        self.btn_open_last.setMinimumWidth(132)
+        set_interface_icon(self.btn_open_last, ICON_DOCX)
+        self.btn_open_last.setIconSize(QSize(20, 20))
+        self.btn_open_last.setFixedSize(200, 44)
         self.btn_open_last.setToolTip("Открыть последний созданный акт DOCX")
         self.btn_open_last.clicked.connect(self.open_last_created_act)
         self.btn_open_last.setEnabled(False)
+        open_button_shadow = QGraphicsDropShadowEffect(self.btn_open_last)
+        open_button_shadow.setBlurRadius(18)
+        open_button_shadow.setOffset(0, 4)
+        open_button_shadow.setColor(QColor(37, 99, 235, 105))
+        self.btn_open_last.setGraphicsEffect(open_button_shadow)
+
+        # The row contains only the follow-up action.  Successful generation
+        # is intentionally silent: no duplicate status text or success toast.
+        self.open_act_overlay = QFrame()
+        self.open_act_overlay.setObjectName("OpenActOverlay")
+        self.open_act_overlay.setFixedSize(200, 44)
+        open_overlay_layout = QHBoxLayout(self.open_act_overlay)
+        open_overlay_layout.setContentsMargins(0, 0, 0, 0)
+        open_overlay_layout.addWidget(self.btn_open_last)
+        self.open_act_overlay.hide()
 
         left_actions = QWidget(action_bar)
+        self.left_actions = left_actions
         left_actions.setMinimumWidth(290)
         left_layout_actions = QHBoxLayout(left_actions)
         left_layout_actions.setContentsMargins(0, 0, 0, 0)
@@ -2607,21 +3430,32 @@ class MainWindow(QMainWindow):
         left_layout_actions.addWidget(self.btn_clear)
         left_layout_actions.addWidget(self.btn_surname_act)
 
+        # Match the verified 1.0.21 composition: one compact primary action
+        # exactly in the middle, with utility controls anchored to the sides.
         center_actions = QWidget(action_bar)
-        center_actions.setObjectName("CenterActActions")
+        self.center_actions = center_actions
         center_layout_actions = QHBoxLayout(center_actions)
         center_layout_actions.setContentsMargins(0, 0, 0, 0)
         center_layout_actions.setSpacing(8)
+        center_layout_actions.addStretch(1)
         center_layout_actions.addWidget(self.btn_create)
-        center_layout_actions.addWidget(self.btn_open_last)
+        center_layout_actions.addWidget(self.open_act_overlay)
+        center_layout_actions.addWidget(self.btn_batch_add)
+        center_layout_actions.addWidget(self.btn_batch_create_main)
+        center_layout_actions.addStretch(1)
 
         right_actions = QWidget(action_bar)
+        self.right_actions = right_actions
         right_actions.setMinimumWidth(290)
         right_layout_actions = QHBoxLayout(right_actions)
         right_layout_actions.setContentsMargins(0, 0, 0, 0)
         right_layout_actions.setSpacing(8)
-        right_layout_actions.addWidget(self.btn_batch_add)
-        right_layout_actions.addWidget(self.btn_open_output)
+        self.post_create_actions = QWidget(right_actions)
+        post_create_layout = QHBoxLayout(self.post_create_actions)
+        post_create_layout.setContentsMargins(0, 0, 0, 0)
+        post_create_layout.setSpacing(8)
+        post_create_layout.addWidget(self.btn_open_output)
+        right_layout_actions.addWidget(self.post_create_actions)
 
         action_layout.addWidget(left_actions, 0, 0, Qt.AlignLeft)
         action_layout.addWidget(center_actions, 0, 1, Qt.AlignCenter)
@@ -2631,11 +3465,14 @@ class MainWindow(QMainWindow):
         action_layout.setColumnStretch(2, 1)
         left_layout.addWidget(action_bar)
 
-        self.remember_created_act(self.find_latest_created_act())
+        self.remember_created_act(
+            self.find_latest_created_act(), reveal_actions=False
+        )
 
-        self.lbl_status = QLabel("")
+        self.lbl_status = CollapsibleStatusLabel("")
         self.lbl_status.setObjectName("StatusLabel")
         self.lbl_status.setWordWrap(True)
+        self.lbl_status.hide()
         left_layout.addWidget(self.lbl_status)
 
         self.batch_panel = QFrame()
@@ -2646,8 +3483,9 @@ class MainWindow(QMainWindow):
         batch_layout.setSpacing(8)
 
         batch_header = QHBoxLayout()
-        batch_title = QLabel("Массовое создание")
+        batch_title = QLabel("Массовая очередь · 0")
         batch_title.setObjectName("BatchTitle")
+        self.batch_title = batch_title
         self.batch_count_label = QLabel("В очереди: 0")
         self.batch_count_label.setObjectName("BatchCount")
         batch_header.addWidget(batch_title)
@@ -2677,7 +3515,22 @@ class MainWindow(QMainWindow):
         header.setSectionResizeMode(1, QHeaderView.Stretch)
         header.setSectionResizeMode(4, QHeaderView.Stretch)
         self.batch_table.cellDoubleClicked.connect(self.edit_batch_act)
-        batch_layout.addWidget(self.batch_table, 1)
+        self.batch_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.batch_table.customContextMenuRequested.connect(
+            self.show_batch_context_menu
+        )
+
+        self.batch_empty_state = QLabel(
+            "Очередь пока пуста\n\n"
+            "Заполните форму слева и нажмите «Добавить в очередь»."
+        )
+        self.batch_empty_state.setObjectName("EmptyState")
+        self.batch_empty_state.setAlignment(Qt.AlignCenter)
+        self.batch_empty_state.setWordWrap(True)
+        self.batch_stack = QStackedWidget()
+        self.batch_stack.addWidget(self.batch_empty_state)
+        self.batch_stack.addWidget(self.batch_table)
+        batch_layout.addWidget(self.batch_stack, 1)
 
         self.batch_progress = QProgressBar()
         self.batch_progress.setTextVisible(True)
@@ -2708,14 +3561,21 @@ class MainWindow(QMainWindow):
         self.btn_batch_create.setMinimumHeight(44)
         self.btn_batch_create.clicked.connect(self.create_batch_acts)
         batch_layout.addWidget(self.btn_batch_create)
+        self.btn_batch_create.hide()
 
         self.batch_edit_row = None
         self.batch_panel.hide()
-        content.addWidget(self.batch_panel)
+        # Queue and history are independent companion panels. Giving both a
+        # stretch factor lets a single visible panel use the free width and
+        # keeps them balanced when they are shown next to each other.
+        content.addWidget(self.batch_panel, 1)
 
         self.history_panel = self._build_history_panel()
         self.history_panel.hide()
-        content.addWidget(self.history_panel)
+        content.addWidget(self.history_panel, 1)
+        self._update_mode_counters()
+        self._update_action_mode()
+        QTimer.singleShot(0, self._resize_workspace_shell)
 
     def _build_history_panel(self) -> QWidget:
         """Build history panel for this workflow."""
@@ -2727,8 +3587,9 @@ class MainWindow(QMainWindow):
         layout.setSpacing(8)
 
         header = QHBoxLayout()
-        title = QLabel("История актов")
+        title = QLabel("История · 0")
         title.setObjectName("BatchTitle")
+        self.history_title = title
         self.history_count_label = QLabel("Актов: 0")
         self.history_count_label.setObjectName("BatchCount")
         header.addWidget(title)
@@ -2767,11 +3628,34 @@ class MainWindow(QMainWindow):
         history_header.setSectionResizeMode(1, QHeaderView.Stretch)
         history_header.setSectionResizeMode(4, QHeaderView.Stretch)
         self.history_table.cellDoubleClicked.connect(self.open_history_row)
-        layout.addWidget(self.history_table, 1)
+        self.history_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.history_table.customContextMenuRequested.connect(
+            self.show_history_context_menu
+        )
 
-        buttons = QHBoxLayout()
+        self.history_empty_state = QLabel(
+            "История пока пуста\n\n"
+            "Созданные акты появятся здесь автоматически."
+        )
+        self.history_empty_state.setObjectName("EmptyState")
+        self.history_empty_state.setAlignment(Qt.AlignCenter)
+        self.history_empty_state.setWordWrap(True)
+        self.history_stack = QStackedWidget()
+        self.history_stack.addWidget(self.history_empty_state)
+        self.history_stack.addWidget(self.history_table)
+        layout.addWidget(self.history_stack, 1)
+
+        # History actions use two rows so labels remain readable when history
+        # is shown beside the queue on a 2K display.
+        history_actions = QFrame(panel)
+        history_actions.setObjectName("HistoryActions")
+        buttons = QGridLayout(history_actions)
+        buttons.setContentsMargins(8, 8, 8, 8)
+        buttons.setHorizontalSpacing(8)
+        buttons.setVerticalSpacing(8)
         self.btn_history_refresh = QPushButton("Обновить")
         self.btn_history_refresh.setProperty("secondary", True)
+        set_interface_icon(self.btn_history_refresh, ICON_REFRESH)
         self.btn_history_refresh.clicked.connect(self.refresh_history)
         self.btn_history_load = QPushButton("Загрузить в форму")
         self.btn_history_load.setProperty("secondary", True)
@@ -2782,32 +3666,115 @@ class MainWindow(QMainWindow):
         self.btn_history_delete = QPushButton("Удалить выбранный")
         self.btn_history_delete.setProperty("dangerSecondary", True)
         self.btn_history_delete.clicked.connect(self.delete_selected_history)
-        self.btn_history_open = QPushButton("Открыть акт DOCX")
+        self.btn_history_open = QPushButton("Открыть акт")
+        set_interface_icon(self.btn_history_open, ICON_DOCX)
+        self.btn_history_open.setToolTip("Открыть выбранный акт DOCX")
         self.btn_history_open.clicked.connect(self.open_selected_history)
         for button in (
             self.btn_history_refresh, self.btn_history_load,
             self.btn_history_delete, self.btn_history_clear,
         ):
             button.setIconSize(QSize(18, 18))
+            button.setMinimumHeight(38)
         self.btn_history_open.setIconSize(QSize(18, 18))
-        buttons.addWidget(self.btn_history_refresh)
-        buttons.addWidget(self.btn_history_load)
-        buttons.addWidget(self.btn_history_delete)
-        buttons.addWidget(self.btn_history_clear)
-        buttons.addStretch(1)
-        buttons.addWidget(self.btn_history_open)
-        layout.addLayout(buttons)
+        self.btn_history_open.setMinimumSize(150, 40)
+        buttons.setColumnStretch(0, 1)
+        buttons.setColumnStretch(1, 1)
+        buttons.addWidget(self.btn_history_refresh, 0, 0)
+        buttons.addWidget(self.btn_history_open, 0, 1)
+        buttons.addWidget(self.btn_history_load, 1, 0, 1, 2)
+        buttons.addWidget(self.btn_history_delete, 2, 0)
+        buttons.addWidget(self.btn_history_clear, 2, 1)
+        layout.addWidget(history_actions)
         return panel
 
     # ---------------- Theme / Styles ----------------
     def _toggle_theme_from_button(self):
         """Toggle theme from button for this workflow."""
-        self.dark_theme = self.btn_theme.isChecked()
+        self.set_theme_mode(self.btn_theme.isChecked())
+
+    def _save_visual_settings(self):
+        """Persist theme settings without interrupting the current workflow."""
+        self.app_settings["theme_dark"] = self.dark_theme
+        try:
+            save_app_settings(self.app_settings)
+        except OSError as error:
+            self.record_error("Сохранение настроек оформления", error)
+            self.show_toast(
+                f"Не удалось сохранить оформление: {error}", tone="warning"
+            )
+
+    def set_theme_mode(self, dark: bool):
+        """Switch between the two supported base themes."""
+        self.dark_theme = bool(dark)
+        self.btn_theme.setChecked(self.dark_theme)
+        self.act_theme_dark.setChecked(self.dark_theme)
+        self.act_theme_light.setChecked(not self.dark_theme)
         self.apply_theme(self.dark_theme)
+        self._save_visual_settings()
+
+    def set_accent_enabled(self, enabled: bool):
+        """Enable or disable the optional color-scheme selector."""
+        self.app_settings["accent_enabled"] = bool(enabled)
+        self.menu_accent.setEnabled(bool(enabled))
+        self.apply_theme(self.dark_theme)
+        self._save_visual_settings()
+
+    def set_accent_scheme(self, scheme: str, _checked: bool = True):
+        """Apply one of the configured accent palettes immediately."""
+        if scheme not in ACCENT_SCHEMES:
+            return
+        self.app_settings["accent_scheme"] = scheme
+        self.accent_actions[scheme].setChecked(True)
+        self.apply_theme(self.dark_theme)
+        self._save_visual_settings()
+
+    def set_legacy_icons(self, enabled: bool):
+        """Switch tagged controls between modern SVG and preserved PNG icons.
+
+        The preference is applied immediately, saved with other appearance
+        settings and inherited by dialogs opened later. Icons introduced after
+        the legacy set keep their SVG so controls never become blank.
+        """
+        enabled = bool(enabled)
+        self.app_settings["legacy_icons"] = enabled
+        QApplication.instance().setProperty("actgenLegacyIcons", enabled)
+        self.act_legacy_icons.setChecked(enabled)
+
+        for label in self.findChildren(QLabel):
+            source = label.property("actgenIconSource")
+            if source:
+                size = int(label.property("actgenIconSize") or 17)
+                label.setPixmap(pixmap_or_empty(str(source), size))
+        for button_type in (QPushButton, QToolButton):
+            for button in self.findChildren(button_type):
+                source = button.property("actgenIconSource")
+                if source:
+                    button.setIcon(icon_or_empty(str(source)))
+        for action in self.findChildren(QAction):
+            source = action.property("actgenIconSource")
+            if source:
+                action.setIcon(icon_or_empty(str(source)))
+
+        self._save_visual_settings()
 
     def apply_theme(self, dark: bool):
         """Apply theme for this workflow."""
         QApplication.instance().setStyle("Fusion")
+
+        accent_key = (
+            str(self.app_settings.get("accent_scheme", "lime"))
+            if self.app_settings.get("accent_enabled", False)
+            else "blue"
+        )
+        accent = ACCENT_SCHEMES.get(accent_key, ACCENT_SCHEMES["blue"])
+        accent_primary = accent["primary"]
+        accent_hover = accent["hover"]
+        accent_pressed = accent["pressed"]
+        accent_secondary = accent["secondary"]
+        accent_text = accent["text"]
+        accent_soft = accent["soft"]
+        accent_selection = accent["selection"]
 
         pal = QPalette()
         if not dark:
@@ -2817,8 +3784,8 @@ class MainWindow(QMainWindow):
             pal.setColor(QPalette.Text, QColor("#111111"))
             pal.setColor(QPalette.Button, QColor("#ffffff"))
             pal.setColor(QPalette.ButtonText, QColor("#111111"))
-            pal.setColor(QPalette.Highlight, QColor("#2d7ff9"))
-            pal.setColor(QPalette.HighlightedText, QColor("#ffffff"))
+            pal.setColor(QPalette.Highlight, QColor(accent_primary))
+            pal.setColor(QPalette.HighlightedText, QColor(accent_text))
             border = "#cfd3d7"
             bg = "#ffffff"
             dd_border = "#e3e6ea"
@@ -2827,31 +3794,46 @@ class MainWindow(QMainWindow):
             spin_up = SPIN_UP_LIGHT_PNG
             spin_down = SPIN_DOWN_LIGHT_PNG
         else:
-            pal.setColor(QPalette.Window, QColor("#0b1016"))
+            dark_window = "#10150d" if accent_key == "lime" else "#0b1016"
+            dark_base = "#171e15" if accent_key == "lime" else "#0f161e"
+            dark_button = "#1d251a" if accent_key == "lime" else "#121922"
+            pal.setColor(QPalette.Window, QColor(dark_window))
             pal.setColor(QPalette.WindowText, QColor("#edf3f8"))
-            pal.setColor(QPalette.Base, QColor("#0f161e"))
+            pal.setColor(QPalette.Base, QColor(dark_base))
             pal.setColor(QPalette.Text, QColor("#edf3f8"))
-            pal.setColor(QPalette.Button, QColor("#121922"))
+            pal.setColor(QPalette.Button, QColor(dark_button))
             pal.setColor(QPalette.ButtonText, QColor("#edf3f8"))
-            pal.setColor(QPalette.Highlight, QColor("#3b82f6"))
-            pal.setColor(QPalette.HighlightedText, QColor("#ffffff"))
+            pal.setColor(QPalette.Highlight, QColor(accent_primary))
+            pal.setColor(QPalette.HighlightedText, QColor(accent_text))
             border = "#2d3a48"
-            bg = "#0f161e"
+            bg = dark_base
             dd_border = "#2d3a48"
-            popup_bg = "#121922"
+            popup_bg = dark_button
             popup_fg = "#edf3f8"
             spin_up = SPIN_UP_DARK_PNG
             spin_down = SPIN_DOWN_DARK_PNG
 
         if dark:
             # COLLEAGUE EDIT POINT: dark theme palette and field colors.
-            tb_bg = "rgba(18, 25, 34, 235)"
+            tb_bg = (
+                "rgba(29, 37, 26, 238)"
+                if accent_key == "lime" else "rgba(18, 25, 34, 235)"
+            )
             tb_border = "rgba(255, 255, 255, 22)"
             btn_bg = "rgba(255, 255, 255, 10)"
             btn_hover = "rgba(255, 255, 255, 18)"
             btn_press = "rgba(255, 255, 255, 26)"
-            btn_checked = "rgba(45, 127, 249, 40)"
-            btn_checked_border = "rgba(45, 127, 249, 120)"
+            btn_checked = accent_soft
+            btn_checked_border = accent_primary
+            action_bg_start = (
+                "rgba(32, 42, 28, 240)"
+                if accent_key == "lime" else "rgba(22, 31, 43, 238)"
+            )
+            action_bg_end = (
+                "rgba(18, 24, 16, 240)"
+                if accent_key == "lime" else "rgba(13, 20, 29, 238)"
+            )
+            action_border = accent_primary
         else:
             # COLLEAGUE EDIT POINT: light theme palette and field colors.
             tb_bg = "rgba(255, 255, 255, 235)"
@@ -2859,8 +3841,11 @@ class MainWindow(QMainWindow):
             btn_bg = "rgba(0, 0, 0, 4)"
             btn_hover = "rgba(0, 0, 0, 7)"
             btn_press = "rgba(0, 0, 0, 10)"
-            btn_checked = "rgba(45, 127, 249, 22)"
-            btn_checked_border = "rgba(45, 127, 249, 120)"
+            btn_checked = accent_soft
+            btn_checked_border = accent_primary
+            action_bg_start = "rgba(255, 255, 255, 238)"
+            action_bg_end = "rgba(244, 247, 251, 238)"
+            action_border = accent_primary
 
         QApplication.instance().setPalette(pal)
 
@@ -2886,7 +3871,7 @@ class MainWindow(QMainWindow):
                 padding: 2px;
             }}
             #BrandTitle {{
-                color: #65aefb;
+                color: {accent_primary};
                 font-size: 12px;
                 font-weight: 700;
                 letter-spacing: 1.15px;
@@ -2896,10 +3881,16 @@ class MainWindow(QMainWindow):
                 margin: 4px 2px;
             }}
 
-            #FormCard, #ActionBar {{
+            #FormCard {{
                 background: {tb_bg};
                 border: 1px solid {tb_border};
                 border-radius: 16px;
+            }}
+            #ActionBar {{
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 {action_bg_start}, stop:1 {action_bg_end});
+                border: 1px solid {action_border};
+                border-radius: 17px;
             }}
             #FormTitle {{
                 font-size: 20px;
@@ -2911,13 +3902,38 @@ class MainWindow(QMainWindow):
             }}
             #StatusLabel {{
                 color: #8190a3;
-                padding: 0 4px;
-                min-height: 18px;
+                padding: 3px 6px 0 6px;
             }}
             #FieldError {{
                 color: #ef6464;
                 font-size: 11px;
                 padding: 0 4px 1px 4px;
+            }}
+            #FormFieldBox[fieldState="filled"] QComboBox,
+            #FormFieldBox[fieldState="filled"] QLineEdit,
+            #FormFieldBox[fieldState="filled"] QSpinBox,
+            #FormFieldBox[fieldState="filled"] QDateEdit,
+            #FormFieldBox[fieldState="filled"] #DateField,
+            #FormFieldBox[fieldState="filled"] #TimeField,
+            #FormFieldBox[fieldState="filled"] #QuantityField {{
+                border-color: {accent_primary};
+            }}
+            #FormFieldBox[fieldState="auto"] QComboBox,
+            #FormFieldBox[fieldState="auto"] QLineEdit,
+            #FormFieldBox[fieldState="auto"] #DateField,
+            #FormFieldBox[fieldState="auto"] #TimeField,
+            #FormFieldBox[fieldState="auto"] #QuantityField {{
+                border-color: {accent_primary};
+                background: {accent_soft};
+            }}
+            #FormFieldBox[fieldState="error"] QComboBox,
+            #FormFieldBox[fieldState="error"] QLineEdit,
+            #FormFieldBox[fieldState="error"] QSpinBox,
+            #FormFieldBox[fieldState="error"] QDateEdit,
+            #FormFieldBox[fieldState="error"] #DateField,
+            #FormFieldBox[fieldState="error"] #TimeField,
+            #FormFieldBox[fieldState="error"] #QuantityField {{
+                border-color: #ef6464;
             }}
             QScrollArea {{ background: transparent; }}
             QScrollArea > QWidget > QWidget {{ background: transparent; }}
@@ -2927,12 +3943,25 @@ class MainWindow(QMainWindow):
                 border: 1px solid {tb_border};
                 border-radius: 14px;
             }}
+            #HistoryActions {{
+                background: {btn_bg};
+                border: 1px solid {tb_border};
+                border-radius: 11px;
+            }}
+            #EmptyState {{
+                color: #8190a3;
+                background: {accent_soft};
+                border: 1px dashed {tb_border};
+                border-radius: 12px;
+                padding: 24px;
+                font-size: 13px;
+            }}
             #BatchTitle {{
                 font-size: 16px;
                 font-weight: 700;
             }}
             #BatchCount {{
-                color: #2d7ff9;
+                color: {accent_primary};
                 font-weight: 700;
             }}
 
@@ -2991,7 +4020,7 @@ class MainWindow(QMainWindow):
                 background: {bg};
             }}
             QLineEdit:focus, QSpinBox:focus, QDateEdit:focus, QComboBox:focus {{
-                border: 1px solid #3b82f6;
+                border: 1px solid {accent_primary};
             }}
             #DateField, #TimeField {{
                 background: {bg};
@@ -3012,7 +4041,7 @@ class MainWindow(QMainWindow):
                 border: none;
             }}
             #DatePickerButton, #TimePickerButton {{
-                background: rgba(59, 130, 246, 22);
+                background: {accent_soft};
                 border-left: 1px solid {dd_border};
                 border-top: none;
                 border-right: none;
@@ -3024,7 +4053,7 @@ class MainWindow(QMainWindow):
                 padding: 0px;
             }}
             #DatePickerButton:hover, #TimePickerButton:hover {{
-                background: rgba(59, 130, 246, 55);
+                background: {accent_selection};
             }}
             #TimePickerCaption {{
                 color: #8190a3;
@@ -3068,14 +4097,14 @@ class MainWindow(QMainWindow):
                 border-bottom-right-radius: 9px;
             }}
             #TimePickerUpButton:hover, #TimePickerDownButton:hover {{
-                background: rgba(59, 130, 246, 35);
+                background: {accent_soft};
             }}
 
             QComboBox QAbstractItemView {{
                 background: {popup_bg};
                 color: {popup_fg};
-                selection-background-color: #2d7ff9;
-                selection-color: #ffffff;
+                selection-background-color: {accent_primary};
+                selection-color: {accent_text};
             }}
 
             #QuantityField {{
@@ -3113,7 +4142,7 @@ class MainWindow(QMainWindow):
                 border-bottom-right-radius: 10px;
             }}
             #QuantityUpButton:hover, #QuantityDownButton:hover {{
-                background: rgba(59, 130, 246, 35);
+                background: {accent_soft};
             }}
 
             #SurnameActButton {{
@@ -3145,7 +4174,7 @@ class MainWindow(QMainWindow):
             #ToastNotification {{
                 background: {popup_bg};
                 border: 1px solid {border};
-                border-left: 4px solid #3b82f6;
+                border-left: 4px solid {accent_primary};
                 border-radius: 12px;
             }}
             #ToastNotification[tone="success"] {{ border-left-color: #34b27b; }}
@@ -3153,26 +4182,26 @@ class MainWindow(QMainWindow):
             #ToastNotification[tone="error"] {{ border-left-color: #ef6464; }}
             #ToastText {{ color: {popup_fg}; }}
             #ToastAction {{
-                color: #65aefb;
+                color: {accent_primary};
                 background: transparent;
                 border: none;
                 padding: 5px 7px;
             }}
 
             QPushButton {{
-                background: #3b82f6;
-                color: #ffffff;
+                background: {accent_primary};
+                color: {accent_text};
                 font-weight: 700;
                 border: none;
                 border-radius: 11px;
                 padding: 10px 14px;
             }}
-            QPushButton:hover {{ background: #2f73df; }}
-            QPushButton:pressed {{ background: #2563c7; }}
+            QPushButton:hover {{ background: {accent_hover}; }}
+            QPushButton:pressed {{ background: {accent_pressed}; }}
             QPushButton[primaryAction="true"] {{
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #2f73ed, stop:0.52 #3b82f6, stop:1 #2563eb);
-                border: 1px solid rgba(147, 197, 253, 105);
+                    stop:0 {accent_pressed}, stop:0.52 {accent_primary}, stop:1 {accent_secondary});
+                border: 1px solid {accent_hover};
                 border-radius: 14px;
                 min-height: 44px;
                 font-size: 14px;
@@ -3182,12 +4211,12 @@ class MainWindow(QMainWindow):
             }}
             QPushButton[primaryAction="true"]:hover {{
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #3b82f6, stop:0.52 #4b8df8, stop:1 #2f6fe4);
-                border-color: rgba(191, 219, 254, 155);
+                    stop:0 {accent_primary}, stop:0.52 {accent_hover}, stop:1 {accent_secondary});
+                border-color: {accent_hover};
             }}
             QPushButton[primaryAction="true"]:pressed {{
-                background: #245fc7;
-                border-color: rgba(147, 197, 253, 125);
+                background: {accent_pressed};
+                border-color: {accent_primary};
             }}
             QPushButton[secondary="true"] {{
                 background: {btn_bg};
@@ -3196,24 +4225,41 @@ class MainWindow(QMainWindow):
             }}
             QPushButton[secondary="true"]:hover {{ background: {btn_hover}; }}
             #OpenLastActButton {{
-                background: rgba(59, 130, 246, 12);
-                color: #65aefb;
-                border: 1px solid rgba(59, 130, 246, 145);
-                border-radius: 12px;
-                padding: 0 16px;
-                font-weight: 700;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 {accent_pressed}, stop:0.56 {accent_primary}, stop:1 {accent_secondary});
+                color: {accent_text};
+                border: 1px solid {accent_hover};
+                border-radius: 13px;
+                padding: 0 20px;
+                font-size: 14px;
+                font-weight: 750;
+                letter-spacing: 0.25px;
             }}
             #OpenLastActButton:hover {{
-                background: rgba(59, 130, 246, 32);
-                border-color: #65aefb;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 {accent_primary}, stop:0.48 {accent_hover}, stop:1 {accent_secondary});
+                border-color: {accent_hover};
             }}
             #OpenLastActButton:pressed {{
-                background: rgba(59, 130, 246, 48);
+                background: {accent_pressed};
             }}
             #OpenLastActButton:disabled {{
                 color: #607086;
                 border-color: {border};
                 background: transparent;
+            }}
+            #OpenActOverlay {{
+                background: transparent;
+                border: none;
+            }}
+            #OpenOutputButton {{
+                padding: 0 16px;
+                border-radius: 11px;
+                font-weight: 650;
+            }}
+            #OpenOutputButton:hover {{
+                color: {accent_primary};
+                border-color: {accent_primary};
             }}
             QPushButton[dangerSecondary="true"] {{
                 background: {btn_bg};
@@ -3221,13 +4267,72 @@ class MainWindow(QMainWindow):
                 border: 1px solid #a94444;
             }}
             QPushButton[dangerSecondary="true"]:hover {{ background: {btn_hover}; }}
+            #CalendarPopupMenu {{
+                padding: 0;
+                border-radius: 16px;
+            }}
+            #CalendarPanel {{
+                background: {popup_bg};
+                border: 1px solid {border};
+                border-radius: 16px;
+            }}
+            #CalendarTitle {{
+                color: {popup_fg};
+                font-size: 15px;
+                font-weight: 750;
+                padding: 2px 4px 4px 4px;
+            }}
+            #ModernCalendar {{
+                background: transparent;
+                color: {popup_fg};
+                border: none;
+            }}
+            #ModernCalendar QWidget#qt_calendar_navigationbar {{
+                background: {tb_bg};
+                border: 1px solid {tb_border};
+                border-radius: 11px;
+                min-height: 38px;
+            }}
+            #ModernCalendar QToolButton {{
+                background: transparent;
+                color: {popup_fg};
+                border: none;
+                border-radius: 8px;
+                padding: 6px 9px;
+                font-weight: 700;
+                font-size: 14px;
+            }}
+            #ModernCalendar QToolButton:hover {{
+                background: {accent_soft};
+                color: {accent_primary};
+            }}
+            #ModernCalendar QSpinBox {{
+                background: {bg};
+                color: {popup_fg};
+                border: 1px solid {border};
+                border-radius: 7px;
+                padding: 4px 7px;
+            }}
+            #ModernCalendar QAbstractItemView {{
+                background: transparent;
+                alternate-background-color: transparent;
+                color: {popup_fg};
+                border: none;
+                outline: none;
+                selection-background-color: {accent_primary};
+                selection-color: {accent_text};
+            }}
+            #ModernCalendar QAbstractItemView::item:hover {{
+                background: {accent_soft};
+                border-radius: 7px;
+            }}
             QTableWidget {{
                 background: {bg};
                 alternate-background-color: {tb_bg};
                 border: 1px solid {border};
                 border-radius: 10px;
                 gridline-color: transparent;
-                selection-background-color: rgba(59, 130, 246, 72);
+                selection-background-color: {accent_selection};
                 selection-color: {popup_fg};
             }}
             QTableWidget::item {{
@@ -3235,8 +4340,18 @@ class MainWindow(QMainWindow):
                 border-bottom: 1px solid {tb_border};
             }}
             QTableWidget::item:selected {{
-                background: rgba(59, 130, 246, 72);
+                background: {accent_selection};
                 color: {popup_fg};
+            }}
+            #DirectoryTitle {{
+                font-size: 19px;
+                font-weight: 750;
+            }}
+            #DirectoryDetails {{
+                background: {accent_soft};
+                border: 1px solid {accent_primary};
+                border-radius: 11px;
+                padding: 12px;
             }}
             QHeaderView::section {{
                 background: {tb_bg};
@@ -3390,6 +4505,8 @@ class MainWindow(QMainWindow):
             del model_blocker
         self.refresh_serials_for_station(station)
         self.update_template_hint()
+        self._mark_field_auto("model")
+        self._mark_field_auto("location")
         return True
 
     def pick_template_for_equipment_type(self, equipment_type: str) -> str:
@@ -3431,25 +4548,126 @@ class MainWindow(QMainWindow):
 
     def set_batch_panel_visible(self, visible: bool):
         """Set batch panel visible for this workflow."""
-        if visible and getattr(self, "act_history_panel", None) is not None:
-            self.act_history_panel.setChecked(False)
         panel = getattr(self, "batch_panel", None)
         if panel is not None:
             panel.setVisible(bool(visible))
-            self.btn_batch_add.setVisible(bool(visible))
+            self._update_action_mode()
+            self._update_action_bar_layout()
             if visible:
-                self.resize(max(self.width(), 1450), max(self.height(), 820))
+                both = bool(
+                    getattr(self, "act_history_panel", None)
+                    and self.act_history_panel.isChecked()
+                )
+                self.resize(
+                    max(self.width(), 1916 if both else 1450),
+                    max(self.height(), 820),
+                )
+            QTimer.singleShot(0, self._resize_workspace_shell)
 
     def set_history_panel_visible(self, visible: bool):
         """Set history panel visible for this workflow."""
-        if visible and getattr(self, "act_batch_panel", None) is not None:
-            self.act_batch_panel.setChecked(False)
         panel = getattr(self, "history_panel", None)
         if panel is not None:
             panel.setVisible(bool(visible))
             if visible:
                 self.refresh_history()
-                self.resize(max(self.width(), 1450), max(self.height(), 820))
+                both = bool(
+                    getattr(self, "act_batch_panel", None)
+                    and self.act_batch_panel.isChecked()
+                )
+                self.resize(
+                    max(self.width(), 1916 if both else 1450),
+                    max(self.height(), 820),
+                )
+        self._update_action_mode()
+        self._update_action_bar_layout()
+        QTimer.singleShot(0, self._resize_workspace_shell)
+
+    def _update_action_bar_layout(self):
+        """Use a compact two-row footer when both companion panels are open."""
+        layout = getattr(self, "action_layout", None)
+        left = getattr(self, "left_actions", None)
+        center = getattr(self, "center_actions", None)
+        right = getattr(self, "right_actions", None)
+        if layout is None or left is None or center is None or right is None:
+            return
+        for widget in (left, center, right):
+            layout.removeWidget(widget)
+        both = bool(
+            getattr(self, "act_batch_panel", None)
+            and self.act_batch_panel.isChecked()
+            and getattr(self, "act_history_panel", None)
+            and self.act_history_panel.isChecked()
+        )
+        if both:
+            layout.addWidget(center, 0, 0, 1, 3, Qt.AlignCenter)
+            layout.addWidget(left, 1, 0, 1, 2, Qt.AlignLeft)
+            layout.addWidget(right, 1, 2, Qt.AlignRight)
+        else:
+            layout.addWidget(left, 0, 0, Qt.AlignLeft)
+            layout.addWidget(center, 0, 1, Qt.AlignCenter)
+            layout.addWidget(right, 0, 2, Qt.AlignRight)
+
+    def _update_action_mode(self, *, animate_open: bool = False):
+        """Switch the centered actions between single and batch workflows."""
+        create = getattr(self, "btn_create", None)
+        overlay = getattr(self, "open_act_overlay", None)
+        add = getattr(self, "btn_batch_add", None)
+        create_all = getattr(self, "btn_batch_create_main", None)
+        if create is None or overlay is None or add is None or create_all is None:
+            return
+
+        batch_enabled = bool(
+            getattr(self, "act_batch_panel", None)
+            and self.act_batch_panel.isChecked()
+        )
+        table = getattr(self, "batch_table", None)
+        count = table.rowCount() if table is not None else 0
+        show_open = bool(
+            self._open_action_requested
+            and self.last_created_act_path
+            and os.path.isfile(self.last_created_act_path)
+        )
+        if batch_enabled:
+            create.hide()
+            overlay.setVisible(show_open)
+            add.show()
+            create_all.setText(f"Создать все · {count}")
+            create_all.setVisible(count > 0)
+            return
+
+        add.hide()
+        create_all.hide()
+        create.show()
+        overlay.setVisible(show_open)
+        create.setText("Создать ещё" if show_open else "Создать акт")
+        create.setProperty("primaryAction", not show_open)
+        create.setProperty("secondary", show_open)
+        create.style().unpolish(create)
+        create.style().polish(create)
+        create.setFixedSize(184 if show_open else 300, 42 if show_open else 48)
+        create.update()
+
+    def _update_mode_counters(self):
+        """Synchronize queue/history counters in panels and the File menu."""
+        batch_table = getattr(self, "batch_table", None)
+        history_table = getattr(self, "history_table", None)
+        batch_count = batch_table.rowCount() if batch_table is not None else 0
+        history_count = history_table.rowCount() if history_table is not None else 0
+        if getattr(self, "batch_title", None) is not None:
+            self.batch_title.setText(f"Массовая очередь · {batch_count}")
+        if getattr(self, "history_title", None) is not None:
+            self.history_title.setText(f"История · {history_count}")
+        if getattr(self, "act_batch_panel", None) is not None:
+            label = "Массовая генерация"
+            self.act_batch_panel.setText(
+                f"{label} · {batch_count}" if batch_count else label
+            )
+        if getattr(self, "act_history_panel", None) is not None:
+            label = "История"
+            self.act_history_panel.setText(
+                f"{label} · {history_count}" if history_count else label
+            )
 
     def refresh_history(self):
         """Refresh history for this workflow."""
@@ -3479,7 +4697,30 @@ class MainWindow(QMainWindow):
             index = self.history_station.findText(current)
             self.history_station.setCurrentIndex(index if index >= 0 else 0)
         self.history_count_label.setText(f"Актов: {len(records)}")
+        self._update_mode_counters()
         self.filter_history()
+
+    def update_history_empty_state(self, visible_rows: int | None = None):
+        """Show guidance when history is empty or a filter has no matches."""
+        total = self.history_table.rowCount()
+        if visible_rows is None:
+            visible_rows = sum(
+                not self.history_table.isRowHidden(row) for row in range(total)
+            )
+        if total == 0:
+            self.history_empty_state.setText(
+                "История пока пуста\n\n"
+                "Созданные акты появятся здесь автоматически."
+            )
+            self.history_stack.setCurrentWidget(self.history_empty_state)
+        elif visible_rows == 0:
+            self.history_empty_state.setText(
+                "По заданным условиям ничего не найдено\n\n"
+                "Измените текст поиска или выберите другую станцию."
+            )
+            self.history_stack.setCurrentWidget(self.history_empty_state)
+        else:
+            self.history_stack.setCurrentWidget(self.history_table)
 
     def history_row_record(self, row: int) -> Dict[str, object]:
         """Handle history row record in MainWindow."""
@@ -3495,6 +4736,7 @@ class MainWindow(QMainWindow):
         """Filter history for this workflow."""
         search = (self.history_search.text() or "").strip().casefold()
         station = self.history_station.currentText()
+        visible_rows = 0
         for row in range(self.history_table.rowCount()):
             values = [
                 self.history_table.item(row, column).text()
@@ -3506,6 +4748,64 @@ class MainWindow(QMainWindow):
                 station == "Все станции" or station == row_station
             )
             self.history_table.setRowHidden(row, not visible)
+            visible_rows += int(visible)
+        self.update_history_empty_state(visible_rows)
+
+    def show_history_context_menu(self, position: QPoint):
+        """Show actions for the history row under the pointer."""
+        item = self.history_table.itemAt(position)
+        if item is None:
+            return
+        self.history_table.selectRow(item.row())
+        menu = QMenu(self.history_table)
+        menu.addAction("Открыть акт", self.open_selected_history)
+        menu.addAction("Загрузить в форму", self.load_selected_history)
+        menu.addAction("Дублировать в очередь", self.duplicate_selected_history_to_batch)
+        menu.addAction("Открыть папку акта", self.open_selected_history_folder)
+        menu.addSeparator()
+        menu.addAction("Удалить", self.delete_selected_history)
+        menu.exec(self.history_table.viewport().mapToGlobal(position))
+
+    def duplicate_selected_history_to_batch(self):
+        """Copy the selected history record into the batch queue."""
+        row = self.selected_history_row()
+        if row is None:
+            QMessageBox.information(self, "История актов", "Выберите акт.")
+            return
+        record = self.history_row_record(row)
+        data = dict(record.get("data") or {})
+        if not data:
+            return
+        defaults = {
+            "date": "", "service_from": "", "service_to": "",
+            "executor": "", "location": "", "model": "", "serial": "",
+            "work": "", "issues": "", "done_work": "", "materials": "",
+            "qty": 0,
+        }
+        defaults.update(data)
+        template = str(defaults.get("template", ""))
+        if not os.path.isfile(template):
+            defaults["template"] = self.pick_template_for_equipment_type(
+                str(defaults.get("model", ""))
+            )
+        new_row = self.batch_table.rowCount()
+        self.batch_table.insertRow(new_row)
+        self.set_batch_row(new_row, defaults)
+        self.update_batch_count()
+        self.act_batch_panel.setChecked(True)
+        self.show_toast("Акт добавлен в массовую очередь.", tone="success")
+
+    def open_selected_history_folder(self):
+        """Open the folder containing the selected history document."""
+        row = self.selected_history_row()
+        if row is None:
+            QMessageBox.information(self, "История актов", "Выберите акт.")
+            return
+        document = str(self.history_row_record(row).get("document", ""))
+        if not document or not os.path.isfile(document):
+            QMessageBox.warning(self, "История актов", "Файл DOCX не найден.")
+            return
+        open_folder(os.path.dirname(document))
 
     def load_selected_history(self):
         """Load selected history for this workflow."""
@@ -3554,6 +4854,7 @@ class MainWindow(QMainWindow):
         try:
             removed = clear_history_records(HISTORY_DIR)
         except OSError as error:
+            self.record_error("Очистка истории", error)
             QMessageBox.critical(
                 self, "Очистить историю", f"Не удалось очистить историю:\n{error}"
             )
@@ -3608,6 +4909,7 @@ class MainWindow(QMainWindow):
                 ):
                     os.remove(metadata_path)
         except OSError as error:
+            self.record_error("Удаление акта из истории", error)
             QMessageBox.critical(
                 self, "Удалить акт", f"Не удалось удалить выбранный акт:\n{error}"
             )
@@ -3630,14 +4932,22 @@ class MainWindow(QMainWindow):
         except OSError:
             return ""
 
-    def remember_created_act(self, path: str):
-        """Remember a generated document and update the centered open button."""
+    def remember_created_act(self, path: str, *, reveal_actions: bool = True):
+        """Remember a generated document and optionally reveal follow-up actions."""
         path = os.path.abspath(str(path or "")) if path else ""
         exists = bool(path and os.path.isfile(path))
         self.last_created_act_path = path if exists else ""
         button = getattr(self, "btn_open_last", None)
         if button is not None:
             button.setEnabled(exists)
+        should_reveal = bool(exists and reveal_actions)
+        self._open_action_requested = should_reveal
+        self._update_action_mode(animate_open=should_reveal)
+        actions = getattr(self, "post_create_actions", None)
+        if actions is not None:
+            # The output folder is a permanent utility action.  Only the
+            # floating document button depends on a successful generation.
+            actions.show()
 
     def open_last_created_act(self):
         """Open the last generated act, recovering gracefully if it was deleted."""
@@ -3651,6 +4961,10 @@ class MainWindow(QMainWindow):
             )
             return
         open_file(path)
+        # Keep the shortcut available: users often reopen the generated file
+        # after checking another window or making a second comparison.
+        self._open_action_requested = True
+        self._update_action_mode()
 
     def clear_form(self):
         """Clear form for this workflow."""
@@ -3762,7 +5076,12 @@ class MainWindow(QMainWindow):
         """Update batch count for this workflow."""
         count = self.batch_table.rowCount()
         self.batch_count_label.setText(f"В очереди: {count}")
+        self.batch_stack.setCurrentWidget(
+            self.batch_table if count else self.batch_empty_state
+        )
         self.lbl_status.setText(f"В очереди актов: {count}")
+        self._update_mode_counters()
+        self._update_action_mode()
 
     def apply_act_data_to_form(self, data: Dict[str, object]):
         """Apply act data to form for this workflow."""
@@ -3825,6 +5144,67 @@ class MainWindow(QMainWindow):
         return sorted(
             {index.row() for index in self.batch_table.selectionModel().selectedRows()},
             reverse=True,
+        )
+
+    def show_batch_context_menu(self, position: QPoint):
+        """Show actions for the batch row under the pointer."""
+        item = self.batch_table.itemAt(position)
+        if item is None:
+            return
+        self.batch_table.selectRow(item.row())
+        menu = QMenu(self.batch_table)
+        menu.addAction("Редактировать", self.edit_selected_batch_act)
+        menu.addAction("Дублировать", self.duplicate_selected_batch_act)
+        menu.addAction("Создать только этот акт", self.create_selected_batch_act)
+        menu.addSeparator()
+        menu.addAction("Удалить из очереди", self.remove_selected_batch_acts)
+        menu.exec(self.batch_table.viewport().mapToGlobal(position))
+
+    def edit_selected_batch_act(self):
+        """Load the selected batch row into the main form for editing."""
+        rows = self.selected_batch_rows()
+        if not rows:
+            QMessageBox.information(
+                self, "Массовое создание", "Выберите строку для редактирования."
+            )
+            return
+        self.edit_batch_act(rows[-1], 0)
+
+    def create_selected_batch_act(self):
+        """Generate only the selected queue row and keep the rest untouched."""
+        rows = self.selected_batch_rows()
+        if not rows:
+            QMessageBox.information(
+                self, "Массовое создание", "Выберите строку для создания."
+            )
+            return
+        row = rows[-1]
+        data = self.batch_row_data(row)
+        try:
+            result = self.generate_act_document(data, preview=False)
+        except Exception as error:
+            self.record_error("Создание выбранного акта из очереди", error)
+            status_item = self.batch_table.item(row, 5)
+            if status_item is not None:
+                status_item.setText("Ошибка")
+                status_item.setForeground(QColor("#e05252"))
+                status_item.setToolTip(str(error))
+            self.show_toast(f"Не удалось создать акт: {error}", tone="warning")
+            return
+        if result is None:
+            return
+        self.batch_table.removeRow(row)
+        self.cancel_batch_edit()
+        self.update_batch_count()
+        if self.act_history_panel.isChecked():
+            self.refresh_history()
+        warnings = [
+            text for text in (result["excel_error"], result["history_error"]) if text
+        ]
+        self.show_toast(
+            "Акт создан." if not warnings else "Акт создан с предупреждениями.",
+            tone="success" if not warnings else "warning",
+            duration=4200,
         )
 
     def duplicate_selected_batch_act(self):
@@ -3894,6 +5274,12 @@ class MainWindow(QMainWindow):
                 str(data.get("service_to", "")),
                 date,
             )
+        elif surname_only and is_validator_template(template):
+            # A blank Validator/MID form still needs the two service-period
+            # writing lines. Use digit-free placeholders so the surname-only
+            # document contains no dates while remaining ready to fill by hand.
+            service_from_doc = SURNAME_ONLY_SERVICE_PERIOD_BLANK
+            service_to_doc = SURNAME_ONLY_SERVICE_PERIOD_BLANK
         elif surname_only:
             service_from_doc = ""
             service_to_doc = ""
@@ -3954,6 +5340,7 @@ class MainWindow(QMainWindow):
             save_history_record(HISTORY_DIR, APP_DIR, out_path, data)
         except OSError as error:
             history_error = str(error)
+            self.record_error("Сохранение записи в истории", error)
 
         excel_error = ""
         if surname_only:
@@ -3984,6 +5371,7 @@ class MainWindow(QMainWindow):
             except ExcelExportError as error:
                 excel_error = str(error)
                 excel_status = f"Excel не обновлён: {error}"
+                self.record_error("Добавление акта в Excel", error)
 
         return {
             "out_path": out_path,
@@ -4035,17 +5423,9 @@ class MainWindow(QMainWindow):
                 return
             if self.act_history_panel.isChecked():
                 self.refresh_history()
-            self.lbl_status.setText(
-                f"✅ Чистый акт создан: {result['out_path']}\n"
-                f"{result['excel_status']}"
-            )
-            self.show_toast(
-                f"Акт по фамилии создан: {executor_name}.",
-                tone="success",
-                action_text="Открыть",
-                action=lambda _checked=False, path=result["out_path"]: open_file(path),
-            )
+            self.lbl_status.clear()
         except Exception as error:
+            self.record_error("Создание акта по фамилии", error)
             self.lbl_status.setText(f"Не удалось создать акт: {error}")
 
     def create_batch_acts(self):
@@ -4063,6 +5443,7 @@ class MainWindow(QMainWindow):
         self.batch_progress.setFormat("Обработано: %v из %m")
         self.batch_progress.show()
         self.btn_batch_create.setEnabled(False)
+        self.btn_batch_create_main.setEnabled(False)
         successful_rows = []
         failures = []
         excel_warnings = []
@@ -4076,6 +5457,7 @@ class MainWindow(QMainWindow):
             try:
                 result = self.generate_act_document(data, preview=False)
             except Exception as error:
+                self.record_error("Массовое создание акта", error, caption)
                 status_item.setText("Ошибка")
                 status_item.setForeground(QColor("#e05252"))
                 status_item.setToolTip(str(error))
@@ -4102,8 +5484,9 @@ class MainWindow(QMainWindow):
 
         created = len(successful_rows)
         self.btn_batch_create.setEnabled(True)
+        self.btn_batch_create_main.setEnabled(True)
         self.batch_progress.hide()
-        self.batch_count_label.setText(f"В очереди: {self.batch_table.rowCount()}")
+        self.update_batch_count()
         self.lbl_status.setText(
             f"✅ Массовое создание завершено: создано {created}, "
             f"ошибок {len(failures)}. В очереди: {self.batch_table.rowCount()}."
@@ -4142,8 +5525,6 @@ class MainWindow(QMainWindow):
                 )
                 return
 
-            out_path = result["out_path"]
-            excel_status = result["excel_status"]
             warnings = []
             if result["excel_error"]:
                 warnings.append(f"Excel не обновлён: {result['excel_error']}")
@@ -4153,25 +5534,27 @@ class MainWindow(QMainWindow):
             if self.act_history_panel.isChecked():
                 self.refresh_history()
 
-            self.lbl_status.setText(f"✅ Файл создан: {out_path}\n{excel_status}")
-            toast_text = "Акт создан."
             if warnings:
-                toast_text += " " + " ".join(warnings)
-            self.show_toast(
-                toast_text,
-                tone="warning" if warnings else "success",
-                duration=6500 if warnings else 4500,
-                action_text="Открыть",
-                action=lambda _checked=False, path=out_path: open_file(path),
-            )
+                warning_text = " ".join(warnings)
+                self.lbl_status.setText(warning_text)
+                self.show_toast(
+                    warning_text,
+                    tone="warning",
+                    duration=6500,
+                )
+            else:
+                self.lbl_status.clear()
         except ValueError as error:
+            self.record_error("Проверка данных акта", error)
             key = "date" if "дат" in str(error).casefold() else "service_period"
             self.show_field_error(key, str(error))
-        except FileNotFoundError:
+        except FileNotFoundError as error:
+            self.record_error("Поиск шаблона акта", error)
             self.show_field_error(
                 "template", "Шаблон не найден. Проверьте папку Data\\Templates."
             )
         except Exception as error:
+            self.record_error("Создание акта", error)
             self.lbl_status.setText(f"Не удалось создать акт: {error}")
 
 

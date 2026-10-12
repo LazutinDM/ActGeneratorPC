@@ -12,6 +12,7 @@ FONT = Path(r"C:\Windows\Fonts\arialbd.ttf")
 
 
 def base_icon() -> Image.Image:
+    """Create the rounded blue gradient shared by legacy icon proposals."""
     image = Image.new("RGBA", (SIZE, SIZE), (0, 0, 0, 0))
     gradient = Image.new("RGBA", image.size)
     draw = ImageDraw.Draw(gradient)
@@ -34,6 +35,7 @@ def base_icon() -> Image.Image:
 
 
 def brand_proposal() -> Image.Image:
+    """Draw a document-and-tools proposal derived from the application logo."""
     image = base_icon()
     draw = ImageDraw.Draw(image)
     # Red screwdriver and silver wrench repeat the visual language of app.ico.
@@ -65,6 +67,7 @@ def brand_proposal() -> Image.Image:
 
 
 def modes_proposal() -> Image.Image:
+    """Draw a four-module proposal for the former optional modes button."""
     image = base_icon()
     draw = ImageDraw.Draw(image)
     # Four raised modules communicate optional application modes.
@@ -92,6 +95,7 @@ def modes_proposal() -> Image.Image:
 
 
 def save_versions(name: str, image: Image.Image, final_size: int) -> None:
+    """Save preview and final-size PNG variants into the design directory."""
     OUTPUT.mkdir(parents=True, exist_ok=True)
     image.resize((256, 256), Image.Resampling.LANCZOS).save(OUTPUT / f"{name}-preview.png")
     image.resize((final_size, final_size), Image.Resampling.LANCZOS).save(OUTPUT / f"{name}-candidate.png")

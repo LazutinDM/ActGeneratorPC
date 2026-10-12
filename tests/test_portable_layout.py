@@ -16,7 +16,7 @@ class PortableLayoutTests(unittest.TestCase):
             encoding="utf-8"
         )
         build_script = (project / "build.ps1").read_text(encoding="utf-8")
-        self.assertIn("PySide6==6.11.1", requirements.splitlines())
+        self.assertIn("PySide6==6.8.3", requirements.splitlines())
         self.assertIn("PyInstaller==6.21.0", build_requirements.splitlines())
         self.assertIn(
             "pyinstaller-hooks-contrib==2026.6",
@@ -26,6 +26,20 @@ class PortableLayoutTests(unittest.TestCase):
         self.assertIn('if ($LASTEXITCODE -ne 0)', build_script)
         self.assertIn("ACTGENERATOR_COMPAT_RUNTIME", build_script)
         self.assertIn('$ApplicationDataNames = @("Icons", "Other", "Templates", "Variables")', build_script)
+
+    def test_single_executable_build_embeds_qt_runtime(self):
+        """The distributable EXE must not depend on replaceable external Qt DLLs."""
+        project = Path(__file__).resolve().parents[1]
+        onefile_spec = (project / "ActGeneratorPC-onefile.spec").read_text(
+            encoding="utf-8"
+        )
+        build_script = (project / "build.ps1").read_text(encoding="utf-8")
+
+        self.assertIn("a.binaries", onefile_spec)
+        self.assertIn("a.datas", onefile_spec)
+        self.assertIn("runtime_dll_search.py", onefile_spec)
+        self.assertIn("[switch]$SingleExeRuntime", build_script)
+        self.assertIn("ActGeneratorPC-onefile.spec", build_script)
 
 
 if __name__ == "__main__":
