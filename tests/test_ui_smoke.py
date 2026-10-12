@@ -846,7 +846,11 @@ class UiSmokeTests(unittest.TestCase):
                 self.assertTrue(window.btn_open_last.isVisible())
                 with patch("app.open_file") as open_document:
                     window.btn_open_last.click()
-                open_document.assert_called_once_with(str(document.resolve()))
+                open_document.assert_called_once()
+                opened_path = Path(open_document.call_args.args[0])
+                # GitHub's Windows runner can expose the same temporary folder
+                # through its long name or its equivalent 8.3 short name.
+                self.assertTrue(os.path.samefile(opened_path, document))
                 QTest.qWait(300)
                 self.assertFalse(window.open_act_overlay.isHidden())
             finally:
