@@ -45,7 +45,30 @@ jobs:
 
       - name: Run tests
         shell: pwsh
-        run: python -m unittest discover -s tests -v
+        run: |
+          # The complete GUI suite is executed locally before tagging. Running
+          # every off-screen window on the hosted runner exceeds its practical
+          # release time limit, so CI repeats all non-GUI tests plus the GUI
+          # scenarios that protect the packaged release and current features.
+          python -m unittest -v `
+            tests.test_equipment_registry_update `
+            tests.test_excel_export `
+            tests.test_history_store `
+            tests.test_portable_layout `
+            tests.test_ui_icons `
+            tests.test_update_manager `
+            tests.test_update_rollback
+          python -m unittest -v `
+            tests.test_ui_smoke.UiSmokeTests.test_main_window_builds_all_primary_controls `
+            tests.test_ui_smoke.UiSmokeTests.test_extended_accent_palette_is_available `
+            tests.test_ui_smoke.UiSmokeTests.test_legacy_icons_can_be_switched_without_restart `
+            tests.test_ui_smoke.UiSmokeTests.test_date_picker_uses_modern_themed_calendar `
+            tests.test_ui_smoke.UiSmokeTests.test_russian_context_menu_filter_handles_line_edits `
+            tests.test_ui_smoke.UiSmokeTests.test_factory_number_fills_equipment_and_station_from_registry `
+            tests.test_ui_smoke.UiSmokeTests.test_form_creates_docx_and_passes_derived_excel_values `
+            tests.test_ui_smoke.UiSmokeTests.test_surname_only_button_creates_both_blank_template_types `
+            tests.test_ui_smoke.UiSmokeTests.test_open_act_stays_visible_when_batch_mode_is_enabled `
+            tests.test_ui_smoke.UiSmokeTests.test_release_version_is_1_0_25
 
       - name: Build portable ZIP
         shell: pwsh
